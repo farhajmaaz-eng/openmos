@@ -37,9 +37,13 @@ R² of each; clicking one adds it to the graph.
 
 **Reading the graph**
 
-Scroll to zoom toward the pointer, drag to pan, shift-scroll to pan sideways,
-two fingers to pinch. Dragging a point picks it up. The coordinate readout shows
-x under the pointer and the value of the focused expression there.
+Scroll to zoom toward the pointer. Drag to pan — right takes the graph left,
+which reads as pushing the window along rather than pulling the paper. Shift-scroll
+pans sideways with the picture, and two fingers pinch to zoom and slide at once;
+the zoom half is not reversed, so spreading zooms in and pinching zooms out.
+Arrow keys and the on-screen buttons name a direction for the *view*, so they are
+not reversed. Dragging a point picks it up. The coordinate readout shows x under
+the pointer and the value of the focused expression there.
 
 **Keeping work**
 
@@ -48,6 +52,13 @@ edit, with a burst of typing collapsed into a single step. Share puts the whole
 document in the link; the share panel can also export and import JSON.
 
 ## Notes on a few decisions
+
+**A drag is the negation of a view shift.** Two primitives sit under every
+gesture: `shiftView` slides the centre of the window, and `dragBy` is its
+negation, so the picture travels the opposite way to the pointer. Keeping them as
+one function and its mirror rather than two directions with their own signs is
+what stops the vertical and horizontal halves from drifting apart — the arrow keys
+were transposed for a while before this made them checkable.
 
 **Zoom and pan do not go through React.** A gesture mutates a ref and schedules
 one canvas repaint; the value is written to the store once the gesture settles.

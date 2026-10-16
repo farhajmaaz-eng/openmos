@@ -262,7 +262,8 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
     [moveTo, size.height, size.width],
   );
 
-  const panBy = useCallback(
+  /** Slides the view centre by a screen distance: right and down are positive. */
+  const shiftView = useCallback(
     (dxPixels: number, dyPixels: number) => {
       const current = liveViewport.current;
       if (dxPixels === 0 && dyPixels === 0) return;
@@ -273,6 +274,18 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       });
     },
     [moveTo],
+  );
+
+  /**
+   * Carries the picture along with a pointer that moved this far.
+   *
+   * Dragging right takes the graph left with it, so the view slides the other
+   * way. Two fingers moving apart still zoom in and together still zoom out;
+   * only the panning half of the gesture is reversed.
+   */
+  const dragBy = useCallback(
+    (dxPixels: number, dyPixels: number) => shiftView(-dxPixels, -dyPixels),
+    [shiftView],
   );
 
   const zoomFromCentre = useCallback(
@@ -344,7 +357,7 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         if (Math.abs(ratio - 1) > 1e-4) {
           zoomAt(ratio, next.lastMidX, next.lastMidY);
         }
-        panBy(next.lastMidX - previous.lastMidX, next.lastMidY - previous.lastMidY);
+        dragBy(next.lastMidX - previous.lastMidX, next.lastMidY - previous.lastMidY);
         showCursor(toGraph(event.clientX, event.clientY));
         return;
       }
@@ -357,7 +370,7 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         const dy = event.clientY - gesture.lastY;
         gesture.lastX = event.clientX;
         gesture.lastY = event.clientY;
-        panBy(dx, dy);
+        dragBy(dx, dy);
         return;
       }
 
@@ -374,7 +387,7 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
       setHoverPoint(pointUnder(event.clientX, event.clientY));
     },
-    [dispatch, panBy, pinchOf, pointUnder, showCursor, toGraph, zoomAt],
+    [dispatch, dragBy, pinchOf, pointUnder, showCursor, toGraph, zoomAt],
   );
 
   const endPointer = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
@@ -414,12 +427,14 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       // pixels keeps the feel the same on both.
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
 
+      // Shift scrolls sideways, and a scroll carries the picture with it, the
+      // same way a drag does.
       if (event.shiftKey && Math.abs(event.deltaX) > 0) {
-        panBy(clampPixels(event.deltaX * unit), 0);
+        dragBy(clampPixels(event.deltaX * unit), 0);
         return;
       }
       if (event.shiftKey) {
-        panBy(clampPixels(event.deltaY * unit), 0);
+        dragBy(clampPixels(event.deltaY * unit), 0);
         return;
       }
 
@@ -428,24 +443,26 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
-  }, [panBy, zoomAt]);
+  }, [dragBy, zoomAt]);
 
   /* --------------------------------------------------------------- keyboard */
 
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
+      // An arrow key names a direction for the view, so it is not reversed the
+      // way a drag is.
       switch (event.key) {
         case "ArrowLeft":
-          panBy(KEYBOARD_NUDGE, 0);
+          shiftView(-KEYBOARD_NUDGE, 0);
           break;
         case "ArrowRight":
-          panBy(-KEYBOARD_NUDGE, 0);
+          shiftView(KEYBOARD_NUDGE, 0);
           break;
         case "ArrowUp":
-          panBy(0, -KEYBOARD_NUDGE);
+          shiftView(0, -KEYBOARD_NUDGE);
           break;
         case "ArrowDown":
-          panBy(0, KEYBOARD_NUDGE);
+          shiftView(0, KEYBOARD_NUDGE);
           break;
         case "+":
         case "=":
@@ -460,7 +477,7 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       }
       event.preventDefault();
     },
-    [panBy, zoomFromCentre],
+    [shiftView, zoomFromCentre],
   );
 
   /* ---------------------------------------------------------------- readout */
