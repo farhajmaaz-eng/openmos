@@ -224,6 +224,25 @@ console.log("\n--- regression ---");
   check("power recovers x^3", power?.latex, "y=x^{3}");
 }
 check("too few points gives no fit", fitModel({ x: [1], y: [2] }, "linear"), null);
+{
+  // Regression scores have to stay finite on ordinary data; a fit scored in
+  // the wrong space used to report -Infinity here.
+  const data = { x: [1, 2, 3, 4, 5], y: [1.1, 3.9, 9.2, 15.8, 24.1] };
+  for (const model of ["linear", "quadratic", "cubic", "exponential", "power", "logarithmic"] as const) {
+    const fit = fitModel(data, model);
+    checkThat(`${model} reports a finite score`, fit !== null && Number.isFinite(fit.r2), fit ? String(fit.r2) : "no fit");
+  }
+  const logarithmic = fitModel(data, "logarithmic");
+  check("logarithmic latex", logarithmic?.latex, "y=13.43\\ln\\left(x\\right)-2.042");
+  checkThat("logarithmic score is a real fraction", logarithmic !== null && logarithmic.r2 > 0.5 && logarithmic.r2 <= 1, `${logarithmic?.r2}`);
+}
+{
+  const flat = fitModel({ x: [1, 2, 3], y: [5, 5, 5] }, "linear");
+  check("flat data scores 1", flat?.r2, 1);
+  const offset = fitModel({ x: [-2, -1, 1, 2], y: [4, 1, 1, 4] }, "linear");
+  checkThat("a useless fit scores 0", offset !== null && Math.abs(offset.r2) < 1e-9, `${offset?.r2}`);
+  checkThat("coefficients stay short", offset !== null && offset.latex.length < 12, offset?.latex);
+}
 
 /* ---------------------------------------------------------------- contours */
 

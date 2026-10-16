@@ -12,14 +12,11 @@ import { initialDocument, saveStored } from "./persist";
 
 type Listener = () => void;
 
-/** Keystrokes closer together than this count as one edit for undo. */
-const TYPING_BURST_MS = 700;
-
 class Store {
   private state: AppState;
   private readonly listeners = new Set<Listener>();
-  /** Where the current run of keystrokes is, for undo grouping. */
-  private lastTyping: { id: string; at: number } | null = null;
+  /** The row a run of keystrokes is going into, for undo grouping. */
+  private lastTyping: string | null = null;
 
   constructor() {
     this.state = initialState(initialDocument());
@@ -37,14 +34,12 @@ class Store {
   dispatch = (action: Action): void => {
     let resolved = action;
 
+    // A run of consecutive edits to the same row collapses into one undo step.
+    // The run ends as soon as anything else happens, so undo never depends on
+    // how fast someone was typing.
     if (action.type === "setSource") {
-      const now = Date.now();
-      const continuing =
-        this.lastTyping !== null &&
-        this.lastTyping.id === action.id &&
-        now - this.lastTyping.at < TYPING_BURST_MS;
-      this.lastTyping = { id: action.id, at: now };
-      resolved = { ...action, transient: continuing };
+      resolved = { ...action, transient: this.lastTyping === action.id };
+      this.lastTyping = action.id;
     } else {
       this.lastTyping = null;
     }

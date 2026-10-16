@@ -105,8 +105,19 @@ const round = (value: number, places = 6): number => {
   return Math.round(value * factor) / factor;
 };
 
+/**
+ * Round to a number of significant figures. Printed fits read better as
+ * `0.0667x^3` than as `0.066667x^3`, and the extra digits were noise anyway.
+ */
+const tidy = (value: number, digits = 4): number => {
+  if (!Number.isFinite(value) || value === 0) return 0;
+  const magnitude = Math.ceil(Math.log10(Math.abs(value)));
+  const places = digits - magnitude;
+  return round(value, places);
+};
+
 function coefficientLatex(value: number): string {
-  const rounded = round(value, 6);
+  const rounded = tidy(value);
   if (rounded === 0) return "0";
   return rounded < 0 ? `-${Math.abs(rounded)}` : `${rounded}`;
 }
@@ -116,7 +127,7 @@ function coefficientLatex(value: number): string {
  * rather than `1x^2`.
  */
 function termLatex(magnitude: number, power: number): string {
-  const value = round(Math.abs(magnitude), 6);
+  const value = tidy(Math.abs(magnitude));
   const sign = magnitude < 0 ? "-" : "";
   if (power === 0) return `${sign}${value}`;
   const factor = value === 1 ? "" : `${value}`;
@@ -133,7 +144,7 @@ function polynomialLatex(coefficients: number[]): string {
   let body = "";
   for (let power = coefficients.length - 1; power >= 0; power -= 1) {
     const coefficient = coefficients[power]!;
-    const magnitude = round(Math.abs(coefficient), 6);
+    const magnitude = tidy(Math.abs(coefficient));
     if (magnitude === 0) continue;
 
     const sign = coefficient < 0 ? "-" : body.length === 0 ? "" : "+";
@@ -205,7 +216,7 @@ export function fitModel(series: Series, model: ModelName): FitResult | null {
       const coefficients = polynomialFit(logX, logY, 1);
       if (!coefficients) return null;
 
-      const exponent = round(coefficients[1]!, 6);
+      const exponent = tidy(coefficients[1]!);
       const scale = Math.exp(coefficients[0]!);
       return {
         name: model,
@@ -213,7 +224,7 @@ export function fitModel(series: Series, model: ModelName): FitResult | null {
         latex:
           exponent === 1
             ? `y=${termLatex(scale, 1)}`
-            : `y=${round(scale, 6) === 1 ? "" : coefficientLatex(scale)}x^{${exponent}}`,
+            : `y=${tidy(scale) === 1 ? "" : coefficientLatex(scale)}x^{${exponent}}`,
         coefficients: [round(scale), exponent],
         r2: rSquared(logX, logY, (x) => coefficients[1]! * x + coefficients[0]!),
         count: usable.length,
@@ -221,7 +232,8 @@ export function fitModel(series: Series, model: ModelName): FitResult | null {
     }
 
     case "logarithmic": {
-      // Fit y = a + b log(x).
+      // y = a + b ln(x) is already linear in ln(x), so the fit happens there —
+      // but the score is reported against the data the user can see.
       const usable = points.filter(([x]) => x > 0);
       if (usable.length < 2) return null;
       const logX = usable.map(([x]) => Math.log(x));
@@ -229,20 +241,17 @@ export function fitModel(series: Series, model: ModelName): FitResult | null {
       const coefficients = polynomialFit(logX, logY, 1);
       if (!coefficients) return null;
 
-      const predict = (x: number) => coefficients[1]! * Math.log(x) + coefficients[0]!;
+      const slope = coefficients[1]!;
+      const predict = (x: number) => slope * Math.log(x) + coefficients[0]!;
       return {
         name: model,
         latex: `y=${
-          coefficients[1]! === 1
-            ? ""
-            : coefficients[1]! === -1
-              ? "-"
-              : coefficientLatex(coefficients[1]!)
+          tidy(slope) === 1 ? "" : tidy(slope) === -1 ? "-" : coefficientLatex(slope)
         }\\ln\\left(x\\right)${
           coefficients[0]! < 0 ? `-${coefficientLatex(-coefficients[0]!)}` : `+${coefficientLatex(coefficients[0]!)}`
         }`,
         coefficients: descending(coefficients),
-        r2: rSquared(logX, logY, predict),
+        r2: rSquared(usable.map(([x]) => x), usable.map(([, y]) => y), predict),
         count: usable.length,
       };
     }
