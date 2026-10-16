@@ -1,0 +1,29 @@
+{
+  "name": "openmos",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "An open-source graphing calculator for the browser.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run test:math && npm run test:build",
+    "test:math": "esbuild scripts/math-check.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/math-check.mjs --log-level=warning && node node_modules/.cache/math-check.mjs",
+    "test:build": "esbuild scripts/build-check.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/build-check.mjs --log-level=warning && node node_modules/.cache/build-check.mjs"
+  },
+  "dependencies": {
+    "katex": "^0.16.11",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}
