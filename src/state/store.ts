@@ -4,13 +4,9 @@ import {
   colorAt,
   nextId,
   type Document,
-  type ExpressionItem,
   type Item,
   type ItemKind,
-  type PointItem,
   type Settings,
-  type SliderItem,
-  type TableItem,
   type Viewport,
 } from "../document/types";
 
@@ -270,20 +266,3 @@ export function addItemOfKind(state: AppState, kind: ItemKind, afterId?: string)
 }
 
 export { nextColor };
-
-/** Slider items with a shared helper for the document layer. */
-export function slidersOf(doc: Document): SliderItem[] {
-  return doc.items.filter((item): item is SliderItem => item.kind === "slider");
-}
-
-export function pointsOf(doc: Document): PointItem[] {
-  return doc.items.filter((item): item is PointItem => item.kind === "point");
-}
-
-export function tablesOf(doc: Document): TableItem[] {
-  return doc.items.filter((item): item is TableItem => item.kind === "table");
-}
-
-export function expressionsOf(doc: Document): ExpressionItem[] {
-  return doc.items.filter((item): item is ExpressionItem => item.kind === "expression");
-}

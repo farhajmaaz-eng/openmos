@@ -174,3 +174,21 @@ export const IconUpload = make(
     <path d="M5 19h14" />
   </>,
 );
+export const IconPanelUp = make(
+  <>
+    <path d="M4.5 15.5 12 9l7.5 6.5" />
+  </>,
+);
+
+export const IconPanelDown = make(
+  <>
+    <path d="M4.5 8.5 12 15l7.5-6.5" />
+  </>,
+);
+
+export const IconList = make(
+  <>
+    <path d="M9 6.5h11M9 12h11M9 17.5h11" />
+    <path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01" />
+  </>,
+);

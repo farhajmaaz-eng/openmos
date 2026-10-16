@@ -8,8 +8,16 @@ import type {
 } from "../document/build";
 import type { PointItem, Settings, Viewport } from "../document/types";
 import { formatTick } from "../math/format";
-import { contourSegments, type ContourSegment } from "./contour";
-import { gridStep, layoutTicks, niceStep, tickValues } from "./ticks";
+import {
+  CONTOUR_BASE_PIXELS,
+  INSIDE,
+  MIXED,
+  contourSegments,
+  partitionField,
+  type ContourOptions,
+  type ContourSegment,
+} from "./contour";
+import { gridStep, niceStep, tickValues } from "./ticks";
 
 /** Colours the renderer needs, resolved from the document theme. */
 export interface Palette {
@@ -157,10 +165,10 @@ export class GraphRenderer {
           this.drawParametric(drawable, input, transform, labels);
           break;
         case "implicit":
-          this.drawImplicit(drawable, input, transform);
+          this.drawImplicit(drawable, input);
           break;
         case "region":
-          this.drawRegion(drawable, input, transform);
+          this.drawRegion(drawable, input);
           break;
         default:
           break;
@@ -207,8 +215,8 @@ export class GraphRenderer {
 
     const { minX, maxX, minY, maxY } = transform.bounds();
     const step = gridStep(input.viewport.scale);
-    const xs = tickValues({ step, labelStep: step, min: minX, max: maxX }, 2000);
-    const ys = tickValues({ step, labelStep: step, min: minY, max: maxY }, 2000);
+    const xs = tickValues({ step, min: minX, max: maxX }, 2000);
+    const ys = tickValues({ step, min: minY, max: maxY }, 2000);
     if (xs.length === 0 && ys.length === 0) return;
 
     const context = this.context;
@@ -243,12 +251,12 @@ export class GraphRenderer {
     if (step > 0 && (settings.grid === "solid" || settings.grid === "dashed")) {
       const major = step * 5;
       context.beginPath();
-      for (const x of tickValues({ step: major, labelStep: major, min: minX, max: maxX }, 800)) {
+      for (const x of tickValues({ step: major, min: minX, max: maxX }, 800)) {
         const px = Math.round(transform.toX(x)) + 0.5;
         context.moveTo(px, 0);
         context.lineTo(px, this.height);
       }
-      for (const y of tickValues({ step: major, labelStep: major, min: minY, max: maxY }, 800)) {
+      for (const y of tickValues({ step: major, min: minY, max: maxY }, 800)) {
         const py = Math.round(transform.toY(y)) + 0.5;
         context.moveTo(0, py);
         context.lineTo(this.width, py);
@@ -269,7 +277,7 @@ export class GraphRenderer {
     const context = this.context;
     context.save();
 
-    if (settings.showXAxis && bounds.minY <= 0 && bounds.maxY >= 0) {
+    if (bounds.minY <= 0 && bounds.maxY >= 0) {
       const py = Math.round(transform.toY(0)) + 0.5;
       context.beginPath();
       context.moveTo(0, py);
@@ -279,7 +287,7 @@ export class GraphRenderer {
       context.stroke();
     }
 
-    if (settings.showYAxis && bounds.minX <= 0 && bounds.maxX >= 0) {
+    if (bounds.minX <= 0 && bounds.maxX >= 0) {
       const px = Math.round(transform.toX(0)) + 0.5;
       context.beginPath();
       context.moveTo(px, 0);
@@ -320,10 +328,13 @@ export class GraphRenderer {
     context.strokeStyle = palette.background;
     context.fillStyle = palette.label;
 
-    const { minX, maxX, minY, maxY } = transform.bounds();
-    const xs = tickValues(layoutTicks(minX, maxX, 10), 400);
+    const bounds = transform.bounds();
+    // Both axes share one step so the numbers agree with each other and with
+    // the grid behind them.
+    const span = { step, min: bounds.minX, max: bounds.maxX };
+    const spanY = { step, min: bounds.minY, max: bounds.maxY };
     const minSeparation = 44;
-    const wantedX = xs.filter((x) => Math.abs(x) > step / 1000);
+    const wantedX = tickValues(span, 400).filter((x) => Math.abs(x) > step / 1000);
 
     let lastPx = -Infinity;
     for (const x of wantedX) {
@@ -340,8 +351,7 @@ export class GraphRenderer {
 
     context.textAlign = "right";
     context.textBaseline = "middle";
-    const ys = tickValues(layoutTicks(minY, maxY, 8), 400);
-    const wantedY = ys.filter((y) => Math.abs(y) > step / 1000);
+    const wantedY = tickValues(spanY, 400).filter((y) => Math.abs(y) > step / 1000);
 
     let lastPy = -Infinity;
     for (const y of wantedY) {
@@ -539,11 +549,10 @@ export class GraphRenderer {
 
   /* ------------------------------------------------------------- implicit */
 
-  private drawImplicit(drawable: ImplicitDrawable, input: RenderInput, transform: Transform): void {
+  private drawImplicit(drawable: ImplicitDrawable, input: RenderInput): void {
     const { scope } = input;
-    const bounds = transform.bounds();
-    const grid = gridFor(this.width, this.height);
     const field = (x: number, y: number) => safeField(drawable.field, x, y, scope);
+    const cells = this.contourOptions();
 
     if (drawable.fill !== "none") {
       // `x^2 + y^2 = 16` compiles to `x^2 + y^2 - 16`, which is negative
@@ -552,7 +561,7 @@ export class GraphRenderer {
       this.fillField(field, drawable.color, 0.16, -1);
     }
 
-    const segments = contourSegments(field, { ...bounds, ...grid });
+    const segments = contourSegments(field, cells);
     if (segments.length === 0) return;
 
     const context = this.context;
@@ -563,34 +572,22 @@ export class GraphRenderer {
     context.lineCap = "round";
     applyLineStyle(context, drawable.lineStyle);
 
-    // Segments arrive in raster order, so consecutive ones usually join up.
-    // Drawing them as one path keeps the stroke width and dash phase steady.
-    context.beginPath();
-    let previous: ContourSegment | null = null;
-    for (const segment of segments) {
-      if (previous && Math.abs(previous.x1 - segment.x0) < 1e-9 && Math.abs(previous.y1 - segment.y0) < 1e-9) {
-        context.lineTo(segment.x1, segment.y1);
-      } else {
-        context.moveTo(segment.x0, segment.y0);
-        context.lineTo(segment.x1, segment.y1);
-      }
-      previous = segment;
-    }
-    context.stroke();
+    // Contour segments come back in graph units and have to be projected onto
+    // the canvas before they are stroked.
+    this.strokeContour(segments);
     context.restore();
   }
 
-  private drawRegion(drawable: RegionDrawable, input: RenderInput, transform: Transform): void {
+  private drawRegion(drawable: RegionDrawable, input: RenderInput): void {
     const { scope } = input;
-    const bounds = transform.bounds();
-    const grid = gridFor(this.width, this.height);
     const field = (x: number, y: number) => safeField(drawable.field, x, y, scope);
+    const cells = this.contourOptions();
 
     if (drawable.fill !== "none") {
       this.fillField(field, drawable.color, drawable.fill === "solid" ? 0.92 : 0.17, 1);
     }
 
-    const segments = contourSegments(field, { ...bounds, ...grid });
+    const segments = contourSegments(field, cells);
     if (segments.length === 0) return;
 
     const context = this.context;
@@ -600,22 +597,64 @@ export class GraphRenderer {
     context.lineJoin = "round";
     context.lineCap = "round";
     applyLineStyle(context, drawable.lineStyle);
-    context.beginPath();
-    for (const segment of segments) {
-      context.moveTo(segment.x0, segment.y0);
-      context.lineTo(segment.x1, segment.y1);
-    }
-    context.stroke();
+    this.strokeContour(segments);
     context.restore();
+  }
+
+  /**
+   * Stroke contour segments, which arrive in graph units.
+   *
+   * They are drawn as one path so the stroke width and dash phase stay steady
+   * along the whole curve, and consecutive segments are joined when they meet,
+   * which they usually do because the tracer walks the grid in order.
+   */
+  private strokeContour(segments: ContourSegment[]): void {
+    const context = this.context;
+    const view = this.transform;
+    context.beginPath();
+
+    let previous: ContourSegment | null = null;
+    for (const segment of segments) {
+      const x0 = view.toX(segment.x0);
+      const y0 = view.toY(segment.y0);
+      const x1 = view.toX(segment.x1);
+      const y1 = view.toY(segment.y1);
+      if (previous && Math.abs(previous.x1 - segment.x0) < 1e-9 && Math.abs(previous.y1 - segment.y0) < 1e-9) {
+        context.lineTo(x1, y1);
+      } else {
+        context.moveTo(x0, y0);
+        context.lineTo(x1, y1);
+      }
+      previous = segment;
+    }
+
+    context.stroke();
+  }
+
+  /**
+   * Finest cell edge for the contour tracer, in graph units. Two pixels is
+   * smooth enough that the eye reads a curve rather than a staircase, and the
+   * tracer refines nothing below it.
+   */
+  private contourOptions(): ContourOptions {
+    const bounds = this.transform.bounds();
+    const scale = this.transform.scale;
+    return {
+      ...bounds,
+      minCell: scale * CONTOUR_PIXEL_SIZE,
+      // Start coarse enough that most of the window is skipped outright.
+      baseCells: Math.max(4, Math.min(96, Math.round(Math.min(this.width, this.height) / CONTOUR_BASE_PIXELS))),
+    };
   }
 
   /**
    * Shade the region where a field is positive.
    *
-   * This is done per pixel into a half-resolution buffer rather than with
-   * marching-squares polygons: thousands of overlapping sub-paths are
-   * quadratic for the rasteriser, while a pixel loop is linear, and the
-   * upscaled buffer gives a smoother edge than the polygons did.
+   * The window is first split into blocks and classified with a handful of
+   * samples each. Blocks that come out uniformly inside or outside are painted
+   * without touching the field again; only blocks straddling the boundary are
+   * evaluated per pixel. That keeps the cost tied to the length of the boundary
+   * rather than to the area of the window.
    */
   private fillField(
     field: (x: number, y: number) => number,
@@ -624,34 +663,63 @@ export class GraphRenderer {
     /** +1 shades where the field is positive, -1 where it is negative. */
     sign: 1 | -1,
   ): void {
-    const width = Math.max(2, Math.ceil(this.width / FILL_DOWNSAMPLE));
-    const height = Math.max(2, Math.ceil(this.height / FILL_DOWNSAMPLE));
+    // Shading is cheap to evaluate in the blocks that straddle the boundary and
+    // expensive to paint everywhere, so the window is classified at a coarser
+    // resolution and scaled back up. The contour that follows is drawn at full
+    // resolution, which is what makes the edge read as a curve.
+    const width = Math.max(2, Math.ceil(this.width / FILL_SCALE));
+    const height = Math.max(2, Math.ceil(this.height / FILL_SCALE));
     const buffer = this.fillBuffer(width, height);
     if (!buffer) return;
 
     const bounds = this.transform.bounds();
-    const spanX = bounds.maxX - bounds.minX;
-    const spanY = bounds.maxY - bounds.minY;
     const rgb = parseColor(color);
     const byteAlpha = Math.round(Math.min(1, Math.max(0, alpha)) * 255);
     const pixels = buffer.image.data;
 
-    for (let row = 0; row < height; row += 1) {
-      // Image rows run top to bottom, graph y runs the other way.
-      const y = bounds.maxY - ((row + 0.5) / height) * spanY;
-      let offset = row * width * 4;
-      for (let column = 0; column < width; column += 1) {
-        const x = bounds.minX + ((column + 0.5) / width) * spanX;
-        const value = field(x, y);
-        if (Number.isFinite(value) && value * sign > 0) {
-          pixels[offset] = rgb[0];
-          pixels[offset + 1] = rgb[1];
-          pixels[offset + 2] = rgb[2];
-          pixels[offset + 3] = byteAlpha;
-        } else {
-          pixels[offset + 3] = 0;
+    const partition = partitionField(field, bounds, width, height, FILL_BLOCK);
+    const spanX = (bounds.maxX - bounds.minX) / width;
+    const spanY = (bounds.maxY - bounds.minY) / height;
+    const inside = sign > 0;
+
+    // Block first, pixels second: the per-block decision is taken once instead
+    // of on every pixel, and the field is only consulted where the boundary is.
+    for (let blockRow = 0; blockRow < partition.rows; blockRow += 1) {
+      const top = blockRow * partition.block;
+      const bottom = Math.min(height, top + partition.block);
+
+      for (let blockColumn = 0; blockColumn < partition.columns; blockColumn += 1) {
+        const verdict = partition.state[blockRow * partition.columns + blockColumn]!;
+        const left = blockColumn * partition.block;
+        const right = Math.min(width, left + partition.block);
+
+        const uniform = verdict !== MIXED && (verdict === INSIDE) === inside;
+        const mixed = verdict === MIXED;
+
+        for (let row = top; row < bottom; row += 1) {
+          // Pixel centres, one `spanY` per row down from the top of the window.
+          const y = bounds.maxY - (row + 0.5) * spanY;
+          let offset = (row * width + left) * 4;
+
+          for (let column = left; column < right; column += 1) {
+            let on = uniform;
+            if (mixed) {
+              const x = bounds.minX + (column + 0.5) * spanX;
+              const value = field(x, y);
+              on = Number.isFinite(value) && value * sign > 0;
+            }
+
+            if (on) {
+              pixels[offset] = rgb[0];
+              pixels[offset + 1] = rgb[1];
+              pixels[offset + 2] = rgb[2];
+              pixels[offset + 3] = byteAlpha;
+            } else {
+              pixels[offset + 3] = 0;
+            }
+            offset += 4;
+          }
         }
-        offset += 4;
       }
     }
 
@@ -659,8 +727,7 @@ export class GraphRenderer {
 
     const context = this.context;
     context.save();
-    context.imageSmoothingEnabled = true;
-    context.imageSmoothingQuality = "high";
+    context.imageSmoothingEnabled = false;
     context.drawImage(buffer.canvas, 0, 0, this.width, this.height);
     context.restore();
   }
@@ -812,8 +879,12 @@ function applyLineStyle(context: CanvasRenderingContext2D, style: string): void 
   else context.setLineDash([]);
 }
 
-/** Fill regions are drawn at half resolution and scaled up. */
-const FILL_DOWNSAMPLE = 2;
+/** Shading is drawn at this fraction of the canvas resolution, then scaled up. */
+const FILL_SCALE = 3;
+/** Side of the blocks the fill is classified in, in buffer pixels. */
+const FILL_BLOCK = 8;
+/** Finest cell edge for contours, in CSS pixels. */
+const CONTOUR_PIXEL_SIZE = 2.5;
 
 function parseColor(color: string): [number, number, number] {
   const hex = color.trim().replace("#", "");
@@ -828,14 +899,7 @@ function parseColor(color: string): [number, number, number] {
  * enough that the eye reads a curve rather than a staircase, and it stays
  * inside the frame budget when several expressions are on screen at once.
  */
-function gridFor(width: number, height: number): { columns: number; rows: number } {
-  // Two cells per pixel is smooth enough that the eye reads a curve rather
-  // than a staircase, and the cell loop stays cheap.
-  return {
-    columns: Math.max(48, Math.min(400, Math.round(width / 2))),
-    rows: Math.max(48, Math.min(400, Math.round(height / 2))),
-  };
-}
+
 
 function safeField(
   field: (x: number, y: number, scope: Record<string, number>) => number,
@@ -848,15 +912,6 @@ function safeField(
   } catch {
     return NaN;
   }
-}
-
-export function withAlpha(color: string, alpha: number): string {
-  const hex = color.replace("#", "");
-  const full = hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex;
-  const r = parseInt(full.slice(0, 2), 16);
-  const g = parseInt(full.slice(2, 4), 16);
-  const b = parseInt(full.slice(4, 6), 16);
-  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 export function roundRect(

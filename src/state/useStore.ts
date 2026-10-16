@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { initialState, reducer, type Action, type AppState } from "./store";
 import { initialDocument, saveStored } from "./persist";
 
@@ -68,23 +68,3 @@ export function useAppState(): AppState {
 export function useDispatch(): (action: Action) => void {
   return store.dispatch;
 }
-
-/**
- * Read a slice of the state with referential stability, so an effect that
- * depends on it does not re-run on every unrelated change.
- */
-export function useSelector<T>(selector: (state: AppState) => T, isEqual: (a: T, b: T) => boolean = Object.is): T {
-  const select = useCallback(() => selector(store.getState()), [selector]);
-
-  const getSnapshot = useCallback((): T => {
-    const next = select();
-    const previous = cache.get(select) as { value: T } | undefined;
-    if (previous && isEqual(previous.value, next)) return previous.value;
-    cache.set(select, { value: next });
-    return next;
-  }, [select, isEqual]);
-
-  return useSyncExternalStore(store.subscribe, getSnapshot, getSnapshot);
-}
-
-const cache = new WeakMap<() => unknown, { value: unknown }>();

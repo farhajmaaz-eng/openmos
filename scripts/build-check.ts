@@ -4,10 +4,10 @@
  */
 
 import { buildDocument, splitTopLevel, stripOuterParens } from "../src/document/build.ts";
-import { contourSegments } from "../src/graph/contour.ts";
+import { INSIDE, MIXED, OUTSIDE, contourSegments, partitionField } from "../src/graph/contour.ts";
 import { fitModel } from "../src/document/regression.ts";
 import { decodeDocument, encodeDocument, sanitize } from "../src/state/persist.ts";
-import { layoutTicks, niceStep, tickValues } from "../src/graph/ticks.ts";
+import { niceStep, tickValues } from "../src/graph/ticks.ts";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_VIEWPORT,
@@ -246,19 +246,156 @@ check("too few points gives no fit", fitModel({ x: [1], y: [2] }, "linear"), nul
 
 /* ---------------------------------------------------------------- contours */
 
-console.log("\n--- marching squares ---");
+console.log("\n--- contour tracing ---");
 {
   const circle = (x: number, y: number) => Math.hypot(x, y) - 10;
-  const segments = contourSegments(circle, { minX: -15, maxX: 15, minY: -15, maxY: 15, columns: 120, rows: 120 });
+  const segments = contourSegments(circle, { minX: -15, maxX: 15, minY: -15, maxY: 15, minCell: 0.5, baseCells: 40 });
   checkThat("a circle yields segments", segments.length > 100, `${segments.length} segments`);
   const radii = segments.map((s) => (Math.hypot(s.x0, s.y0) + Math.hypot(s.x1, s.y1)) / 2);
   const worst = Math.max(...radii.map((r) => Math.abs(r - 10)));
-  checkThat("segments sit on the circle", worst < 0.05, `worst radius error ${worst.toFixed(4)}`);
+  checkThat("segments sit on the circle", worst < 0.02, `worst radius error ${worst.toFixed(5)}`);
 
-  const line = contourSegments((x) => x - 3, { minX: 0, maxX: 10, minY: -5, maxY: 5, columns: 60, rows: 40 });
-  checkThat("a vertical line yields segments", line.length >= 39, `${line.length}`);
+  // The whole point of refining adaptively: far fewer samples than a uniform
+  // grid would need for the same accuracy.
+  const naive = 60 * 60 * 4;
+  checkThat(
+    "adaptive tracing is far cheaper than a uniform grid",
+    segments.length * 4 < naive / 8,
+    `${segments.length} cells refined vs ${naive} uniform samples`,
+  );
+
+  const line = contourSegments((x) => x - 3, { minX: 0, maxX: 10, minY: -5, maxY: 5, minCell: 0.25, baseCells: 40 });
+  checkThat("a vertical line yields segments", line.length >= 30, `${line.length}`);
   const xs = line.map((s) => (s.x0 + s.x1) / 2);
   checkThat("all crossings are at x=3", Math.max(...xs.map((x) => Math.abs(x - 3))) < 1e-9);
+
+  // A curve tucked entirely inside one coarse block must still be found.
+  const tiny = contourSegments((x, y) => Math.hypot(x - 3, y - 3) - 0.2, {
+    minX: -5,
+    maxX: 5,
+    minY: -5,
+    maxY: 5,
+    minCell: 0.2,
+    baseCells: 40,
+  });
+  checkThat("a small closed curve inside a coarse block is still found", tiny.length > 6, `${tiny.length} segments`);
+  const tinyRadii = tiny.map((s) => Math.hypot((s.x0 + s.x1) / 2 - 3, (s.y0 + s.y1) / 2 - 3));
+  checkThat("  and it sits on the small circle", Math.max(...tinyRadii.map((r) => Math.abs(r - 0.2))) < 0.05);
+
+  check("a field with no crossing returns nothing", contourSegments((x) => x + 100, { minX: -5, maxX: 5, minY: -5, maxY: 5, minCell: 0.5 }).length, 0);
+  check("a field that is undefined everywhere returns nothing", contourSegments(() => NaN, { minX: -5, maxX: 5, minY: -5, maxY: 5, minCell: 0.5 }).length, 0);
+}
+
+console.log("\\n--- shaded regions ---");
+{
+  // The fill only consults the field where a block straddles the boundary, so
+  // the painted map has to agree with a plain per-pixel evaluation. Getting the
+  // pixel-to-graph mapping wrong shows up here and nowhere else.
+  const checkFill = (
+    label: string,
+    field: (x: number, y: number) => number,
+    bounds: { minX: number; maxX: number; minY: number; maxY: number },
+    width: number,
+    height: number,
+    block: number,
+  ) => {
+    const partition = partitionField(field, bounds, width, height, block);
+    const spanX = (bounds.maxX - bounds.minX) / width;
+    const spanY = (bounds.maxY - bounds.minY) / height;
+    let wrong = 0;
+    for (let row = 0; row < height; row += 1) {
+      const y = bounds.maxY - (row + 0.5) * spanY;
+      for (let column = 0; column < width; column += 1) {
+        const verdict = partition.state[Math.floor(row / partition.block) * partition.columns + Math.floor(column / partition.block)]!;
+        const truth = field(bounds.minX + (column + 0.5) * spanX, y) > 0;
+        const painted = verdict === MIXED ? truth : verdict === INSIDE;
+        if (painted !== truth) wrong += 1;
+      }
+    }
+    checkThat(`${label} fills exactly the truth`, wrong === 0, `${wrong} of ${width * height} pixels wrong`);
+  };
+
+  const wide = { minX: -10.3, maxX: 10.3, minY: -8.5, maxY: 8.5 };
+  checkFill("a circle", (x, y) => x * x + y * y - 9, wide, 400, 330, 8);
+  checkFill("a sideways parabola", (x, y) => y - x * x + 8, wide, 400, 330, 8);
+  checkFill(
+    "a steep parabola at high zoom",
+    (x, y) => y - x * x + 8,
+    { minX: -3.6, maxX: 3.6, minY: -3, maxY: 3 },
+    400,
+    330,
+    8,
+  );
+  checkFill("a thin stripe", (x) => x - 0.2, wide, 400, 330, 8);
+  checkFill("a stripe through a corner", (x, y) => x + y, wide, 400, 330, 8);
+
+  // A boundary thinner than a block has to be found, not skipped over.
+  const thin = partitionField((x) => Math.abs(x) - 0.3, wide, 400, 330, 8);
+  let straddling = 0;
+  for (const verdict of thin.state) if (verdict === MIXED) straddling += 1;
+  checkThat("a boundary thinner than a block is still located", straddling > 0, `${straddling} straddling blocks`);
+}
+
+console.log("\\n--- sampling budget ---");
+{
+  // Every sample costs time on every frame, so the tracer has to skip the
+  // parts of the window that clearly cannot contain a crossing. Counting the
+  // evaluations catches a tracer that subdivides everywhere.
+  const counting = (expression: (x: number, y: number) => number) => {
+    let calls = 0;
+    const field = (x: number, y: number) => {
+      calls += 1;
+      return expression(x, y);
+    };
+    return { field, calls: () => calls };
+  };
+
+  const bounds = { minX: -50, maxX: 50, minY: -50, maxY: 50 };
+  const minCell = 0.1;
+  const uniform = ((bounds.maxX - bounds.minX) / minCell) * ((bounds.maxY - bounds.minY) / minCell) * 4;
+
+  const outside = counting((x, y) => x * x + y * y - 100);
+  contourSegments(outside.field, { ...bounds, minCell, baseCells: 60 });
+  checkThat(
+    "a small circle costs a fraction of a uniform scan",
+    outside.calls() < uniform / 10,
+    `${outside.calls()} samples vs ${Math.round(uniform)} for a uniform grid at the same accuracy`,
+  );
+
+  const above = counting((x) => x + 1000);
+  contourSegments(above.field, { minX: -50, maxX: 50, minY: -50, maxY: 50, minCell: 50 / 500, baseCells: 60 });
+  checkThat(
+    "a field that is positive everywhere is accepted immediately",
+    above.calls() <= 60 * 60 * 5 + 60 * 60,
+    `${above.calls()} samples`,
+  );
+
+  const below = counting((x) => x - 1000);
+  contourSegments(below.field, { minX: -50, maxX: 50, minY: -50, maxY: 50, minCell: 50 / 500, baseCells: 60 });
+  checkThat(
+    "a field that is negative everywhere is accepted immediately",
+    below.calls() <= 60 * 60 * 5 + 60 * 60,
+    `${below.calls()} samples`,
+  );
+}
+
+console.log("\n--- region partitioning ---");
+{
+  const circle = (x: number, y: number) => Math.hypot(x, y) - 10;
+  const partition = partitionField(circle, { minX: -20, maxX: 20, minY: -20, maxY: 20 }, 200, 200, 8);
+  let inside = 0;
+  let mixed = 0;
+  for (const value of partition.state) {
+    if (value === INSIDE) inside += 1;
+    else if (value === MIXED) mixed += 1;
+  }
+  const total = partition.state.length;
+  checkThat("most blocks are uniform", (inside + total - inside - mixed) / total > 0.7, `${inside} inside, ${mixed} mixed, ${total} total`);
+  checkThat("some blocks straddle the boundary", mixed > 8 && mixed < total / 3, `${mixed} mixed blocks`);
+  checkThat("a block edge is honoured", partition.block, 8);
+
+  const nothing = partitionField(() => -1, { minX: -1, maxX: 1, minY: -1, maxY: 1 }, 40, 40, 8);
+  checkThat("a uniformly negative field is all outside", [...nothing.state].every((v) => v === OUTSIDE), true);
 }
 
 /* -------------------------------------------------------------------- ticks */
@@ -268,8 +405,9 @@ check("niceStep(1)", niceStep(1), 1);
 check("niceStep(3)", niceStep(3), 5);
 check("niceStep(0.02)", niceStep(0.02), 0.02);
 check("niceStep(7)", niceStep(7), 10);
-check("ticks from -10 to 10", tickValues(layoutTicks(-10, 10, 8), 400), [-10, -5, 0, 5, 10]);
-checkThat("tickValues survives a silly span", tickValues({ step: 1e-12, labelStep: 1e-12, min: -1e6, max: 1e6 }, 400).length === 0);
+check("ticks from -10 to 10", tickValues({ step: 5, min: -10, max: 10 }), [-10, -5, 0, 5, 10]);
+check("ticks stay inside the span", tickValues({ step: 3, min: -10, max: 10 }), [-9, -6, -3, 0, 3, 6, 9]);
+check("a silly span yields nothing rather than looping", tickValues({ step: 1e-12, min: -1e6, max: 1e6 }).length, 0);
 
 /* -------------------------------------------------------------- persistence */
 

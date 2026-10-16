@@ -1,7 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
 import katex from "katex";
 import { PALETTE } from "../document/types";
-import type { Item } from "../document/types";
 
 interface ColorMenuProps {
   color: string;
@@ -106,44 +105,5 @@ export function renderLatex(latex: string): string {
     });
   } catch {
     return latex.replace(/[<>&]/g, "");
-  }
-}
-
-/** A menu row button used by the item context menu. */
-export function MenuAction({
-  label,
-  onSelect,
-  children,
-}: {
-  label: string;
-  onSelect: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      className="icon-button"
-      title={label}
-      aria-label={label}
-      onClick={(event) => {
-        event.stopPropagation();
-        onSelect();
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-export function itemTypeLabel(item: Item): string {
-  switch (item.kind) {
-    case "slider":
-      return "Slider";
-    case "point":
-      return "Point";
-    case "table":
-      return "Table";
-    default:
-      return "Expression";
   }
 }

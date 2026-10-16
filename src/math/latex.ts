@@ -287,11 +287,3 @@ function formatMathNumber(value: number): string {
 export function toLatex(node: Node): string {
   return print(node, 0);
 }
-
-/**
- * Last-resort printer for sources that failed to parse: show them verbatim so
- * the user still sees what they typed.
- */
-export function rawToLatex(source: string): string {
-  return source.replace(/([_^])/g, "\\$1").replace(/([{}])/g, "\\$1");
-}

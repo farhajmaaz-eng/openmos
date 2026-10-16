@@ -501,8 +501,3 @@ function buildTable(item: TableItem, env: CompileEnv): BuiltTable {
   return { id: item.id, color: item.color, columns };
 }
 
-/** Evaluate a table column, used by the regression tools. */
-export function columnValues(table: BuiltTable, index: number): number[] {
-  return table.columns[index]?.values ?? [];
-}
-

@@ -703,12 +703,18 @@ td.is-nan {
   min-width: 0;
   overflow: hidden;
   background: var(--bg-raised);
-  touch-action: none;
 }
 
 .graph-canvas {
   display: block;
   cursor: grab;
+  /* `touch-action` is not inherited, so it has to be set on the canvas as well
+     as the container. Without it the browser runs its own page zoom over the
+     top of ours and a two-finger drag turns into a browser zoom instead. */
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .graph.is-panning .graph-canvas {
@@ -1065,23 +1071,203 @@ kbd {
 
 /* ---------------------------------------------------------------- responsive */
 
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 1ms !important;
+  }
+}
+
+.add-menu-item:hover {
+  background: var(--bg-hover);
+}
+
+/* ------------------------------------------------------------ touch input */
+
+/* Fingers need more room than a cursor, and the graph is the one control that
+   gets used without looking closely at it. */
+@media (pointer: coarse) {
+  :root {
+    --row-height: 40px;
+  }
+
+  .icon-button {
+    min-width: 36px;
+    height: 34px;
+  }
+
+  .graph-tools {
+    padding: 5px;
+    gap: 3px;
+    left: 14px;
+    bottom: 14px;
+  }
+
+  .graph-tools .icon-button {
+    min-width: 40px;
+    height: 40px;
+  }
+
+  .text-button {
+    height: 36px;
+    padding: 0 14px;
+  }
+
+  .add-button {
+    height: 38px;
+  }
+
+  .swatch {
+    width: 16px;
+    height: 16px;
+  }
+
+  .row-actions .icon-button {
+    min-width: 34px;
+    height: 34px;
+  }
+
+  .field-input {
+    font-size: 17px;
+  }
+
+  input[type="range"] {
+    height: 26px;
+  }
+
+  input[type="range"]::-webkit-slider-thumb {
+    width: 20px;
+    height: 20px;
+    margin-top: -9px;
+  }
+
+  input[type="range"]::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+  }
+}
+
+/* ------------------------------------------------------------- graph area */
+
+.graph-area {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  min-height: 0;
+}
+
+.graph-area > .graph {
+  grid-area: 1 / 1;
+}
+
+.panel-restore {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 36px;
+  padding: 0 14px 0 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Only worth offering where the panel and the graph are stacked. */
+.panel-toggle {
+  display: none;
+}
+
+@media (max-width: 760px) {
+  .panel-toggle {
+    display: inline-flex;
+  }
+}
+
+/* ------------------------------------------------------------------ phone */
+
 @media (max-width: 760px) {
   .app {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(180px, 42dvh) minmax(0, 1fr);
+    grid-template-rows: minmax(150px, 44dvh) minmax(0, 1fr);
   }
 
   .panel {
     border-right: 0;
     border-bottom: 1px solid var(--line);
   }
-}
 
-@media (prefers-reduced-motion: reduce) {
-  * {
-    transition-duration: 1ms !important;
+  /* The graph is pinned to the second row: hiding the panel takes its row away
+     with it, and without this the graph would slide up into the empty one. */
+  .graph-area {
+    grid-row: 2;
+  }
+
+  .app.panel-hidden {
+    grid-template-rows: 0 minmax(0, 1fr);
+  }
+
+  .app.panel-hidden .panel {
+    display: none;
+  }
+
+  .panel-scroll {
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 76px;
+  }
+
+  /* Dialogs go edge to edge so the footer stays reachable with a thumb. */
+  .scrim {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .dialog {
+    width: 100%;
+    max-height: 100dvh;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .dialog-body {
+    flex: 1;
+  }
+
+  .dialog-footer {
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .readout {
+    font-size: 13px;
+    padding: 7px 12px;
+  }
+
+  .regression-item {
+    padding: 5px 6px 5px 10px;
+  }
+
+  .table-scroll {
+    max-height: 150px;
+  }
+
+  .panel-footer {
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
   }
 }
-.add-menu-item:hover {
-  background: var(--bg-hover);
+
+/* A mouse on a narrow window is still a fine pointer. */
+@media (max-width: 760px) and (pointer: fine) {
+  .icon-button {
+    min-width: 28px;
+    height: 28px;
+  }
+
+  .field-input {
+    font-size: 16px;
+  }
 }

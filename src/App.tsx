@@ -10,6 +10,9 @@ import { FunctionPanel, SettingsPanel, SharePanel, ShortcutsPanel } from "./ui/P
 import {
   IconFunction,
   IconKeyboard,
+  IconList,
+  IconPanelDown,
+  IconPanelUp,
   IconRedo,
   IconSettings,
   IconShare,
@@ -25,6 +28,9 @@ export default function App() {
 
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* On a phone the list and the graph share the screen; the list can be folded
+     away so the graph gets the whole of it. */
+  const [panelOpen, setPanelOpen] = useState(true);
 
   /* ------------------------------------------------------------- theming */
 
@@ -134,7 +140,7 @@ export default function App() {
   );
 
   return (
-    <div className="app">
+    <div className={`app${panelOpen ? "" : " panel-hidden"}`}>
       <aside className="panel">
         <header className="panel-header">
           <span className="wordmark">
@@ -142,6 +148,16 @@ export default function App() {
             openmos
           </span>
           <div className="header-actions">
+            <button
+              type="button"
+              className="icon-button panel-toggle"
+              title={panelOpen ? "Hide expressions" : "Show expressions"}
+              aria-label={panelOpen ? "Hide expressions" : "Show expressions"}
+              aria-pressed={!panelOpen}
+              onClick={() => setPanelOpen((open) => !open)}
+            >
+              {panelOpen ? <IconPanelDown size={17} /> : <IconPanelUp size={17} />}
+            </button>
             <button
               type="button"
               className="icon-button"
@@ -205,7 +221,8 @@ export default function App() {
           <div className="panel-scroll">
             {doc.items.length === 0 ? (
               <p className="empty-note">
-                Nothing here yet. Add an expression to start plotting.
+                Nothing plotted yet. Add an expression and it appears here —{" "}
+                <code>y = x^2</code>, <code>(2t, t^2)</code> or <code>x^2 + y^2 = 9</code> all work.
               </p>
             ) : (
               <ExpressionList
@@ -223,13 +240,21 @@ export default function App() {
         </div>
       </aside>
 
-      <GraphView
-        build={build}
-        viewport={doc.viewport}
-        settings={doc.settings}
-        focusedId={focusedId}
-        dark={prefersDark}
-      />
+      <div className="graph-area">
+        <GraphView
+          build={build}
+          viewport={doc.viewport}
+          settings={doc.settings}
+          focusedId={focusedId}
+          dark={prefersDark}
+        />
+        {panelOpen ? null : (
+          <button type="button" className="panel-restore" onClick={() => setPanelOpen(true)}>
+            <IconList size={16} />
+            Expressions
+          </button>
+        )}
+      </div>
 
       {panel === "settings" ? (
         <SettingsPanel settings={doc.settings} onClose={() => dispatch({ type: "setPanel", panel: "none" })} />

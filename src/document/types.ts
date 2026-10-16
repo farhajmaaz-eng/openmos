@@ -46,8 +46,6 @@ export interface SliderItem extends BaseItem {
   max: number;
   step: number;
   value: number;
-  /** Snap to `step` while dragging. */
-  animate?: boolean;
 }
 
 export interface PointItem extends BaseItem {
@@ -55,15 +53,12 @@ export interface PointItem extends BaseItem {
   x: number;
   y: number;
   label?: string;
-  /** Constrain the point to a curve, e.g. `y = x^2`. */
-  constraint?: string;
 }
 
 export type Item = ExpressionItem | TableItem | SliderItem | PointItem;
 
 export type ThemeName = "light" | "dark" | "system";
 export type GridStyle = "solid" | "dashed" | "dotted" | "none";
-export type LabelSize = "auto" | "small" | "normal" | "large";
 
 export interface Viewport {
   /** Horizontal centre of the window, in graph units. */
@@ -76,18 +71,16 @@ export interface Viewport {
 export interface Settings {
   theme: ThemeName;
   grid: GridStyle;
+  /** Draw the x and y axes. */
   showAxes: boolean;
+  /** Label ticks along each axis. */
   showNumbers: boolean;
+  /** Mark the origin. */
   showOrigin: boolean;
-  showXAxis: boolean;
-  showYAxis: boolean;
+  /** How the trig functions read their argument. */
   degrees: boolean;
-  /** Draw the label box for the most recent expression. */
-  labelSize: LabelSize;
-  /** Show the coordinate readout while dragging. */
+  /** Show the coordinate readout while the pointer is over the graph. */
   showDragHint: boolean;
-  /** Turn on the table view below the expression list. */
-  tablesVisible: boolean;
 }
 
 export interface Document {
@@ -104,12 +97,8 @@ export const DEFAULT_SETTINGS: Settings = {
   showAxes: true,
   showNumbers: true,
   showOrigin: true,
-  showXAxis: true,
-  showYAxis: true,
   degrees: false,
-  labelSize: "auto",
   showDragHint: true,
-  tablesVisible: true,
 };
 
 export const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, scale: 1 / 48 };

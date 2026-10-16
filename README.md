@@ -47,6 +47,47 @@ The document is saved to `localStorage` as you type. Undo and redo cover every
 edit, with a burst of typing collapsed into a single step. Share puts the whole
 document in the link; the share panel can also export and import JSON.
 
+## Notes on a few decisions
+
+**Zoom and pan do not go through React.** A gesture mutates a ref and schedules
+one canvas repaint; the value is written to the store once the gesture settles.
+Going through the store on every pointer event meant rebuilding the document and
+re-rendering the list for each one, and because those renders re-read the
+viewport from props, a drag snapped back to where it started.
+
+**Pinch applies only the change since the previous move.** Scaling by the ratio
+of the current distance to the distance at the start of the gesture compounds
+once per event, which is how a two-finger drag turns into a runaway zoom.
+Separately, `touch-action: none` has to be set on the canvas and not just its
+container — it does not inherit, and without it the browser's own page zoom
+runs on top of ours.
+
+**Implicit curves and shaded regions are both sampled fields.** One contour
+tracer serves both. It starts from a coarse grid and refines only into blocks
+whose corners disagree about the sign, which keeps the work proportional to the
+length of the boundary rather than the area of the window — a window full of
+implicit curves went from about two seconds a frame to under fifty milliseconds.
+
+**Filling a region is a pixel loop, not polygons.** Marching squares produces
+lovely boundary segments, but tens of thousands of overlapping sub-paths are
+quadratic for the rasteriser. The fill classifies blocks first, evaluates the
+field only in the blocks that straddle the boundary, and paints at a third of
+the canvas resolution. The boundary itself is drawn at full resolution by the
+contour tracer, which is what keeps the edge reading as a curve rather than as a
+staircase.
+
+**A fresh visit starts empty.** There is no sample graph to dismiss. The empty
+state says what the three shapes of input look like, which is the part people
+actually need, and then gets out of the way.
+
+## On a phone
+
+The list and the graph share the screen, so the list folds away to a chevron in
+the header and the graph takes the whole of the display. Dialogs go edge to edge
+so their footer stays within reach of a thumb, hit targets are sized for fingers
+rather than a cursor, and the canvas opts out of the browser's own pan and zoom
+so a two-finger drag is handled here rather than by the page.
+
 ## Running it
 
 ```bash
@@ -82,10 +123,8 @@ can evaluate one expression thousands of times, so walking a tree each time
 shows up. Compiling once means the hot loop is a few property lookups.
 
 *Implicit curves and shaded regions are the same problem.* Both are a scalar
-field over the plane, and both are drawn by sampling it on a grid. Curves come
-from marching squares over the zero contour; regions are filled per pixel into
-a half-resolution buffer and scaled up, which is both cheaper and smoother than
-filling thousands of little polygons.
+field over the plane, and both are drawn by sampling it. The reasoning behind
+the sampler is in [Notes on a few decisions](#notes-on-a-few-decisions).
 
 ## Licence
 

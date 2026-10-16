@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { BuildResult } from "../document/build";
 import type { PointItem, Settings, Viewport } from "../document/types";
-import { DARK_PALETTE, GraphRenderer, LIGHT_PALETTE, Transform, type Palette, type RenderInput } from "../graph/renderer";
+import {
+  DARK_PALETTE,
+  GraphRenderer,
+  LIGHT_PALETTE,
+  Transform,
+  type Palette,
+  type RenderInput,
+} from "../graph/renderer";
 import { decimalsForScale, formatNumber } from "../math/format";
 import { useDispatch } from "../state/useStore";
 import { IconMinus, IconPlus, IconReset } from "./Icon";
@@ -10,6 +17,13 @@ const MIN_SCALE = 1e-9;
 const MAX_SCALE = 1e8;
 const HIT_RADIUS = 11;
 const KEYBOARD_NUDGE = 40;
+
+/** Zoom multiplier per pixel of wheel travel. A notch of 100px is about 1.28x. */
+const ZOOM_PER_PIXEL = 0.0025;
+/** Cap on a single wheel event, so a trackpad flick cannot jump the view. */
+const MAX_WHEEL_PIXELS = 140;
+/** How long the viewport waits before being written to the store. */
+const COMMIT_DELAY_MS = 180;
 
 interface GraphViewProps {
   build: BuildResult;
@@ -24,11 +38,16 @@ type Gesture =
   | { kind: "pan"; lastX: number; lastY: number }
   | { kind: "point"; id: string; offsetX: number; offsetY: number };
 
+interface Pointer {
+  x: number;
+  y: number;
+}
+
+/** Two-finger state: only the change since the previous move is applied. */
 interface PinchState {
-  distance: number;
-  scale: number;
-  centerX: number;
-  centerY: number;
+  lastDistance: number;
+  lastMidX: number;
+  lastMidY: number;
 }
 
 export function GraphView({ build, viewport, settings, focusedId, dark }: GraphViewProps) {
@@ -37,14 +56,35 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
   const wrapRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<GraphRenderer | null>(null);
   const gestureRef = useRef<Gesture>({ kind: "none" });
-  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pointersRef = useRef(new Map<number, Pointer>());
   const pinchRef = useRef<PinchState | null>(null);
   const frameRef = useRef(0);
+  const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [hoverPoint, setHoverPoint] = useState<string | null>(null);
   const [cursor, setCursor] = useState<{ x: number; y: number } | null>(null);
   const [panning, setPanning] = useState(false);
+
+  // The readout follows the pointer during a drag, which would otherwise mean a
+  // React render for every pointer event. Updates are collapsed into a frame.
+  const cursorRef = useRef<{ x: number; y: number } | null>(null);
+  const cursorFrameRef = useRef(0);
+  const showCursor = useCallback((value: { x: number; y: number } | null) => {
+    cursorRef.current = value;
+    if (cursorFrameRef.current !== 0) return;
+    cursorFrameRef.current = requestAnimationFrame(() => {
+      cursorFrameRef.current = 0;
+      setCursor(cursorRef.current);
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (cursorFrameRef.current !== 0) cancelAnimationFrame(cursorFrameRef.current);
+    },
+    [],
+  );
 
   const palette: Palette = dark ? DARK_PALETTE : LIGHT_PALETTE;
 
@@ -70,13 +110,24 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
   const points = useMemo(() => build.points.filter((point) => point.hidden !== true), [build.points]);
 
-  // The pending frame always draws the newest input rather than whatever the
-  // callback happened to close over. Without this a frame scheduled before the
-  // element was measured would bail out, and the `frameRef` guard would then
-  // block every later attempt.
+  // The viewport lives here rather than in the store while a gesture is in
+  // flight. Pan and zoom then cost one canvas redraw and nothing else: no store
+  // update, no document rebuild, no React render. The value is committed once
+  // the gesture settles.
+  //
+  // It must only be re-synced when the store's viewport genuinely changes — for
+  // instance on reset or on undo. Assigning the prop on every render would
+  // undo the pan the moment a gesture triggered a re-render.
+  const liveViewport = useRef<Viewport>(viewport);
+  const syncedViewport = useRef<Viewport>(viewport);
+  if (syncedViewport.current !== viewport) {
+    syncedViewport.current = viewport;
+    liveViewport.current = viewport;
+  }
+
   const pendingRef = useRef<RenderInput | null>(null);
   pendingRef.current = {
-    viewport,
+    viewport: liveViewport.current,
     width: size.width,
     height: size.height,
     drawables: build.drawables,
@@ -95,6 +146,9 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       const renderer = rendererRef.current;
       const input = pendingRef.current;
       if (!renderer || !input || input.width === 0 || input.height === 0) return;
+      // A pending frame always paints the newest input rather than whatever
+      // the callback happened to close over.
+      input.viewport = liveViewport.current;
       renderer.draw(input);
     });
   }, []);
@@ -111,44 +165,30 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
   useEffect(() => {
     requestDraw();
-  }, [
-    requestDraw,
-    build.drawables,
-    points,
-    build.scope,
-    settings,
-    palette,
-    focusedId,
-    viewport.x,
-    viewport.y,
-    viewport.scale,
-  ]);
+  }, [requestDraw, build.drawables, points, build.scope, settings, palette, focusedId, viewport]);
 
   useEffect(
     () => () => {
       if (frameRef.current !== 0) cancelAnimationFrame(frameRef.current);
+      if (commitTimerRef.current !== null) clearTimeout(commitTimerRef.current);
     },
     [],
   );
 
   /* ------------------------------------------------------------ coordinates */
 
-  const transform = useMemo(
-    () => new Transform(viewport, size.width || 1, size.height || 1),
-    [size.height, size.width, viewport],
-  );
-
   const toGraph = useCallback(
     (clientX: number, clientY: number) => {
       const canvas = canvasRef.current;
       if (!canvas) return { x: 0, y: 0 };
       const rect = canvas.getBoundingClientRect();
+      const current = new Transform(liveViewport.current, size.width || 1, size.height || 1);
       return {
-        x: transform.toGraphX(clientX - rect.left),
-        y: transform.toGraphY(clientY - rect.top),
+        x: current.toGraphX(clientX - rect.left),
+        y: current.toGraphY(clientY - rect.top),
       };
     },
-    [transform],
+    [size.height, size.width],
   );
 
   const pointUnder = useCallback(
@@ -156,14 +196,15 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       const canvas = canvasRef.current;
       if (!canvas) return null;
       const rect = canvas.getBoundingClientRect();
+      const current = new Transform(liveViewport.current, size.width || 1, size.height || 1);
       const px = clientX - rect.left;
       const py = clientY - rect.top;
-      const threshold = HIT_RADIUS * viewport.scale;
+      const threshold = HIT_RADIUS * current.scale;
 
       let best: { id: string; distance: number } | null = null;
       for (const point of points) {
-        const dx = point.x - transform.toGraphX(px);
-        const dy = point.y - transform.toGraphY(py);
+        const dx = point.x - current.toGraphX(px);
+        const dy = point.y - current.toGraphY(py);
         const distance = Math.hypot(dx, dy);
         if (distance <= threshold && (best === null || distance < best.distance)) {
           best = { id: point.id, distance };
@@ -171,34 +212,67 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       }
       return best?.id ?? null;
     },
-    [points, transform, viewport.scale],
+    [points, size.height, size.width],
   );
 
   /* --------------------------------------------------------------- viewport */
 
-  const setViewport = useCallback(
-    (next: Viewport) => dispatch({ type: "setViewport", viewport: next }),
-    [dispatch],
+  /** Apply a viewport immediately, then write it to the store once things stop. */
+  const moveTo = useCallback(
+    (next: Viewport) => {
+      liveViewport.current = next;
+      requestDraw();
+
+      if (commitTimerRef.current !== null) clearTimeout(commitTimerRef.current);
+      commitTimerRef.current = setTimeout(() => {
+        commitTimerRef.current = null;
+        const settled = liveViewport.current;
+        if (settled.x === viewport.x && settled.y === viewport.y && settled.scale === viewport.scale) return;
+        dispatch({ type: "setViewport", viewport: settled });
+      }, COMMIT_DELAY_MS);
+    },
+    [dispatch, requestDraw, viewport],
   );
 
   const zoomAt = useCallback(
     (factor: number, clientX: number, clientY: number) => {
       const canvas = canvasRef.current;
-      if (!canvas || size.width === 0) return;
+      if (!canvas || size.width === 0 || size.height === 0) return;
+
+      const current = liveViewport.current;
       const rect = canvas.getBoundingClientRect();
       const px = clientX - rect.left;
       const py = clientY - rect.top;
-      const anchor = transform.toGraphX(px);
-      const anchorY = transform.toGraphY(py);
-      const scale = clampScale(viewport.scale * factor);
-      const ratio = scale / viewport.scale;
-      setViewport({
+      const view = new Transform(current, size.width, size.height);
+      const anchorX = view.toGraphX(px);
+      const anchorY = view.toGraphY(py);
+
+      const scale = clampScale(current.scale * factor);
+      if (scale === current.scale) return;
+
+      // A screen pixel sits at (graph - centre) / scale + centre, so keeping it
+      // fixed means solving for the new centre with the *new* scale, not with
+      // the ratio between the old and new.
+      moveTo({
         scale,
-        x: anchor - (px - size.width / 2) * ratio,
-        y: anchorY + (py - size.height / 2) * ratio,
+        x: anchorX - (px - size.width / 2) * scale,
+        y: anchorY + (py - size.height / 2) * scale,
       });
     },
-    [setViewport, size.height, size.width, transform, viewport.scale],
+    [moveTo, size.height, size.width],
+  );
+
+  const panBy = useCallback(
+    (dxPixels: number, dyPixels: number) => {
+      const current = liveViewport.current;
+      if (dxPixels === 0 && dyPixels === 0) return;
+      moveTo({
+        scale: current.scale,
+        x: current.x + dxPixels * current.scale,
+        y: current.y - dyPixels * current.scale,
+      });
+    },
+    [moveTo],
   );
 
   const zoomFromCentre = useCallback(
@@ -209,37 +283,29 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
     [zoomAt],
   );
 
-  const panBy = useCallback(
-    (dxPixels: number, dyPixels: number) => {
-      setViewport({
-        ...viewport,
-        x: viewport.x + dxPixels * viewport.scale,
-        y: viewport.y - dyPixels * viewport.scale,
-      });
-    },
-    [setViewport, viewport],
-  );
-
   /* ---------------------------------------------------------------- pointer */
+
+  const pinchOf = useCallback((): PinchState | null => {
+    const [a, b] = [...pointersRef.current.values()];
+    if (!a || !b) return null;
+    return {
+      lastDistance: Math.max(1e-6, Math.hypot(a.x - b.x, a.y - b.y)),
+      lastMidX: (a.x + b.x) / 2,
+      lastMidY: (a.y + b.y) / 2,
+    };
+  }, []);
 
   const onPointerDown = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
-      canvasRef.current?.setPointerCapture(event.pointerId);
+      capturePointer(event.pointerId, true);
       pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
 
-      // Two fingers means a pinch; keep the previous gesture so lifting one
-      // finger does not jump the view.
+      // A second finger means a pinch. Both fingers stay tracked so lifting one
+      // hands over to a pan instead of jumping.
       if (pointersRef.current.size === 2) {
-        const [a, b] = [...pointersRef.current.values()];
-        if (a && b) {
-          pinchRef.current = {
-            distance: Math.hypot(a.x - b.x, a.y - b.y),
-            scale: viewport.scale,
-            centerX: (a.x + b.x) / 2,
-            centerY: (a.y + b.y) / 2,
-          };
-        }
+        pinchRef.current = pinchOf();
         gestureRef.current = { kind: "none" };
+        setPanning(false);
         return;
       }
 
@@ -256,28 +322,34 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
       gestureRef.current = { kind: "pan", lastX: event.clientX, lastY: event.clientY };
       setPanning(true);
-      setCursor(toGraph(event.clientX, event.clientY));
+      showCursor(toGraph(event.clientX, event.clientY));
     },
-    [build.points, dispatch, pointUnder, toGraph, viewport.scale],
+    [build.points, dispatch, pinchOf, pointUnder, showCursor, toGraph],
   );
 
   const onPointerMove = useCallback(
     (event: React.PointerEvent<HTMLCanvasElement>) => {
       pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
-      setCursor(toGraph(event.clientX, event.clientY));
 
-      const pinch = pinchRef.current;
-      if (pinch && pointersRef.current.size >= 2) {
-        const [a, b] = [...pointersRef.current.values()];
-        if (!a || !b) return;
-        const distance = Math.hypot(a.x - b.x, a.y - b.y);
-        if (pinch.distance > 0) {
-          zoomAt(distance / pinch.distance, (a.x + b.x) / 2, (a.y + b.y) / 2);
+      // Pinch: apply only the change since the previous move. Re-applying the
+      // whole distance from where the fingers started compounds on every event
+      // and runs away.
+      if (pinchRef.current && pointersRef.current.size >= 2) {
+        const next = pinchOf();
+        if (!next) return;
+        const previous = pinchRef.current;
+        pinchRef.current = next;
+
+        const ratio = next.lastDistance / previous.lastDistance;
+        if (Math.abs(ratio - 1) > 1e-4) {
+          zoomAt(ratio, next.lastMidX, next.lastMidY);
         }
-        pinch.centerX = (a.x + b.x) / 2;
-        pinch.centerY = (a.y + b.y) / 2;
+        panBy(next.lastMidX - previous.lastMidX, next.lastMidY - previous.lastMidY);
+        showCursor(toGraph(event.clientX, event.clientY));
         return;
       }
+
+      showCursor(toGraph(event.clientX, event.clientY));
 
       const gesture = gestureRef.current;
       if (gesture.kind === "pan") {
@@ -285,7 +357,7 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         const dy = event.clientY - gesture.lastY;
         gesture.lastX = event.clientX;
         gesture.lastY = event.clientY;
-        if (dx !== 0 || dy !== 0) panBy(dx, dy);
+        panBy(dx, dy);
         return;
       }
 
@@ -302,21 +374,32 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
       setHoverPoint(pointUnder(event.clientX, event.clientY));
     },
-    [dispatch, panBy, pointUnder, toGraph, zoomAt],
+    [dispatch, panBy, pinchOf, pointUnder, showCursor, toGraph, zoomAt],
   );
 
   const endPointer = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     pointersRef.current.delete(event.pointerId);
+    capturePointer(event.pointerId, false);
+
     if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (canvasRef.current?.hasPointerCapture(event.pointerId)) {
-      canvasRef.current.releasePointerCapture(event.pointerId);
+
+    // One finger left after a pinch: keep dragging as a pan from wherever it is
+    // now, so the view does not jump when the second finger lifts.
+    if (pointersRef.current.size === 1 && gestureRef.current.kind === "none") {
+      const [remaining] = [...pointersRef.current.values()];
+      if (remaining) {
+        gestureRef.current = { kind: "pan", lastX: remaining.x, lastY: remaining.y };
+        setPanning(true);
+      }
+      return;
     }
+
     if (pointersRef.current.size === 0) {
       gestureRef.current = { kind: "none" };
       setPanning(false);
-      setCursor(null);
+      showCursor(null);
     }
-  }, []);
+  }, [showCursor]);
 
   /* ------------------------------------------------------------------ wheel */
 
@@ -326,13 +409,21 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
-      if (event.shiftKey) {
-        panBy(event.deltaY + event.deltaX, 0);
+
+      // Trackpads report pixels, mice report lines or pages. Normalising to
+      // pixels keeps the feel the same on both.
+      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
+
+      if (event.shiftKey && Math.abs(event.deltaX) > 0) {
+        panBy(clampPixels(event.deltaX * unit), 0);
         return;
       }
-      // Trackpads report pixels, mice report lines or pages.
-      const intensity = event.deltaMode === 1 ? 0.02 : event.deltaMode === 2 ? 0.3 : 0.0016;
-      zoomAt(Math.exp(event.deltaY * intensity), event.clientX, event.clientY);
+      if (event.shiftKey) {
+        panBy(clampPixels(event.deltaY * unit), 0);
+        return;
+      }
+
+      zoomAt(Math.exp(-clampPixels(event.deltaY * unit) * ZOOM_PER_PIXEL), event.clientX, event.clientY);
     };
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
@@ -374,12 +465,12 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
 
   /* ---------------------------------------------------------------- readout */
 
-  const decimals = decimalsForScale(viewport.scale);
+  const decimals = decimalsForScale(liveViewport.current.scale);
   const focusedValue = useMemo(() => {
     if (!focusedId) return null;
     const drawable = build.drawables.find((entry) => entry.id === focusedId);
     if (!drawable || drawable.kind !== "curve") return null;
-    const value = evaluate(drawable.fn, viewport.x, build.scope);
+    const value = evaluate(drawable.fn, liveViewport.current.x, build.scope);
     return Number.isFinite(value) ? value : null;
   }, [build.drawables, build.scope, focusedId, viewport.x]);
 
@@ -421,7 +512,13 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         {readout}
 
         <div className="graph-tools">
-          <button type="button" className="icon-button" title="Zoom in" aria-label="Zoom in" onClick={() => zoomFromCentre(1.4)}>
+          <button
+            type="button"
+            className="icon-button"
+            title="Zoom in"
+            aria-label="Zoom in"
+            onClick={() => zoomFromCentre(1.4)}
+          >
             <IconPlus size={16} />
           </button>
           <button
@@ -438,7 +535,10 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
             className="icon-button"
             title="Reset view"
             aria-label="Reset view"
-            onClick={() => dispatch({ type: "resetViewport" })}
+            onClick={() => {
+              liveViewport.current = { ...viewport, x: 0, y: 0, scale: 1 / 48 };
+              dispatch({ type: "resetViewport" });
+            }}
           >
             <IconReset size={16} />
           </button>
@@ -448,8 +548,29 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
   );
 }
 
+/* ------------------------------------------------------------------ helpers */
+
+/**
+ * Pointer capture is best-effort: it throws for pointer ids the browser does
+ * not know about, and losing it only means a gesture ends early.
+ */
+function capturePointer(pointerId: number, want: boolean): void {
+  const canvas = document.querySelector<HTMLCanvasElement>("canvas");
+  if (!canvas) return;
+  try {
+    if (want) canvas.setPointerCapture(pointerId);
+    else if (canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+  } catch {
+    /* ignore */
+  }
+}
+
 function clampScale(scale: number): number {
   return Math.min(MAX_SCALE, Math.max(MIN_SCALE, scale));
+}
+
+function clampPixels(pixels: number): number {
+  return Math.max(-MAX_WHEEL_PIXELS, Math.min(MAX_WHEEL_PIXELS, pixels));
 }
 
 function evaluate(

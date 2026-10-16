@@ -111,34 +111,6 @@ export interface RelationNode {
   right: Node;
 }
 
-export function isNum(node: Node): node is NumNode {
-  return node.kind === "num";
-}
-
-/** Left-most leaf of a chain, used to decide how far an expression reaches. */
-export function leftmost(node: Node): Node {
-  let current = node;
-  for (;;) {
-    switch (current.kind) {
-      case "bin":
-      case "compare":
-      case "logic":
-      case "relation":
-        current = current.left;
-        break;
-      case "unary":
-        current = current.arg;
-        break;
-      case "group":
-      case "abs":
-        current = current.arg;
-        break;
-      default:
-        return current;
-    }
-  }
-}
-
 export function walk(node: Node, visit: (node: Node) => void): void {
   visit(node);
   switch (node.kind) {

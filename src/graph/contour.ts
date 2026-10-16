@@ -1,10 +1,15 @@
 /**
- * Marching squares over a scalar field.
+ * Sampling a scalar field.
  *
- * Implicit curves (`x^2 + y^2 = 9`) and inequality shading (`y > x^2`) both
- * come down to finding where a field crosses zero. Evaluating on a grid and
- * stitching the crossings into geometry is the cheapest way to get smooth
- * results without solving anything analytically.
+ * Implicit curves (`x^2 + y^2 = 9`) and shaded regions (`y > x^2`) are both
+ * "where does this field cross zero" questions, and both want to answer them
+ * without evaluating the field everywhere.
+ *
+ * A uniform grid does evaluate everywhere: a 1000x900 window at two cells per
+ * pixel is 160k samples per expression, per frame, and two or three such
+ * expressions put a frame well past 200ms. Instead both routines start from a
+ * coarse grid and recurse only into blocks whose corners disagree about the
+ * sign, which cuts the work down to roughly the length of the boundary.
  */
 
 export interface ContourSegment {
@@ -12,6 +17,13 @@ export interface ContourSegment {
   y0: number;
   x1: number;
   y1: number;
+}
+
+export interface FieldBounds {
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
 }
 
 /** Interpolate where a value crosses zero along one edge. */
@@ -28,241 +40,256 @@ function crossing(
   return [ax + (bx - ax) * t, ay + (by - ay) * t];
 }
 
-export interface ContourOptions {
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-  /** Cells across and down. The window is not square, so neither is the grid. */
-  columns: number;
-  rows: number;
-  /** Treat values in (-epsilon, epsilon) as exactly zero. */
-  epsilon?: number;
+function positive(value: number, epsilon: number): boolean {
+  return value > epsilon;
 }
 
-const MAX_CELLS = 400;
+interface Corners {
+  tl: number;
+  tr: number;
+  br: number;
+  bl: number;
+}
 
 /**
- * Trace the zero contour of `field` as a list of segments.
+ * Marching squares over one cell, given its four corner values. Returns the
+ * segments that cross zero inside it.
  *
- * Corner samples are cached, so a curve that loops back over part of the grid
- * does not pay to evaluate the same point twice.
+ * Two opposite corners inside (codes 5 and 10) are saddles; the segments are
+ * joined so the two regions touch at a point rather than one swallowing the
+ * other.
+ */
+function cellSegments(x0: number, y0: number, x1: number, y1: number, corners: Corners, out: ContourSegment[]): void {
+  const { tl, tr, br, bl } = corners;
+  if (!Number.isFinite(tl) || !Number.isFinite(tr) || !Number.isFinite(br) || !Number.isFinite(bl)) return;
+  const code = (positive(tl, 0) ? 1 : 0) | (positive(tr, 0) ? 2 : 0) | (positive(br, 0) ? 4 : 0) | (positive(bl, 0) ? 8 : 0);
+  if (code === 0 || code === 15) return;
+
+  const top = () => crossing(x0, y0, tl, x1, y0, tr);
+  const right = () => crossing(x1, y0, tr, x1, y1, br);
+  const bottom = () => crossing(x0, y1, bl, x1, y1, br);
+  const left = () => crossing(x0, y0, tl, x0, y1, bl);
+  const push = (a: [number, number], b: [number, number]) => out.push({ x0: a[0], y0: a[1], x1: b[0], y1: b[1] });
+
+  switch (code) {
+    case 1:
+    case 14:
+      push(left(), top());
+      break;
+    case 2:
+    case 13:
+      push(top(), right());
+      break;
+    case 3:
+    case 12:
+      push(left(), right());
+      break;
+    case 4:
+    case 11:
+      push(right(), bottom());
+      break;
+    case 6:
+    case 9:
+      push(top(), bottom());
+      break;
+    case 7:
+    case 8:
+      push(left(), bottom());
+      break;
+    case 5:
+      push(left(), top());
+      push(right(), bottom());
+      break;
+    case 10:
+      push(left(), bottom());
+      push(top(), right());
+      break;
+    default:
+      break;
+  }
+}
+
+export interface ContourOptions extends FieldBounds {
+  /** Finest cell edge, in graph units. Usually a couple of pixels. */
+  minCell: number;
+  /** Side of the grid the search starts from. Defaults to the window size. */
+  baseCells?: number;
+}
+
+/** Enough refinement to go from a block of a few pixels down to sub-pixel. */
+const MAX_DEPTH = 6;
+
+/**
+ * Side, in pixels, of the grid the search starts from.
+ *
+ * Every starting block costs five samples whatever it contains, so this is the
+ * floor on a frame's work: five per block here, plus a few more for the blocks
+ * that actually straddle something. Sixteen pixels is coarse enough to keep
+ * that floor low and fine enough that a curve smaller than this would not be
+ * worth resolving.
+ */
+export const CONTOUR_BASE_PIXELS = 16;
+
+/**
+ * Trace the zero contour of `field`, refining only where the sign changes.
+ *
+ * A block is accepted as empty once its corners and its centre agree about the
+ * sign. That can still miss a closed curve sitting wholly inside one block, so
+ * the starting grid is kept around a dozen pixels across — a blob smaller than
+ * that would not be worth resolving anyway.
  */
 export function contourSegments(
   field: (x: number, y: number) => number,
   options: ContourOptions,
 ): ContourSegment[] {
   const { minX, maxX, minY, maxY } = options;
-  const epsilon = options.epsilon ?? 0;
-
-  const columns = clampCells(options.columns);
-  const rows = clampCells(options.rows);
-  const stepX = (maxX - minX) / columns;
-  const stepY = (maxY - minY) / rows;
-
-  const width = columns + 1;
-  const cache = new Float64Array(width * (rows + 1));
-  const filled = new Uint8Array(width * (rows + 1));
-
-  const at = (column: number, row: number): number => {
-    const index = row * width + column;
-    if (filled[index] === 0) {
-      const value = field(minX + column * stepX, minY + row * stepY);
-      cache[index] = Number.isFinite(value) ? value : NaN;
-      filled[index] = 1;
-    }
-    return cache[index]!;
-  };
+  const span = Math.max(maxX - minX, maxY - minY);
+  const minCell = Math.max(options.minCell, Math.abs(span) * 1e-12);
+  const baseCells = Math.max(2, Math.min(options.baseCells ?? 40, 512));
 
   const segments: ContourSegment[] = [];
 
-  for (let row = 0; row < rows; row += 1) {
-    for (let column = 0; column < columns; column += 1) {
-      const x0 = minX + column * stepX;
-      const y0 = minY + row * stepY;
-      const x1 = x0 + stepX;
-      const y1 = y0 + stepY;
+  const visit = (x0: number, y0: number, x1: number, y1: number, depth: number): void => {
+    const tl = field(x0, y0);
+    const tr = field(x1, y0);
+    const br = field(x1, y1);
+    const bl = field(x0, y1);
 
-      const v0 = at(column, row);
-      const v1 = at(column + 1, row);
-      const v2 = at(column + 1, row + 1);
-      const v3 = at(column, row + 1);
-      if (!Number.isFinite(v0) || !Number.isFinite(v1) || !Number.isFinite(v2) || !Number.isFinite(v3)) continue;
+    const corners =
+      (positive(tl, 0) ? 1 : 0) |
+      (positive(tr, 0) ? 2 : 0) |
+      (positive(br, 0) ? 4 : 0) |
+      (positive(bl, 0) ? 8 : 0);
 
-      // bit 0 = v0 (top-left), 1 = v1 (top-right), 2 = v2, 3 = v3 (bottom-left)
-      const code = (v0 > epsilon ? 1 : 0) | (v1 > epsilon ? 2 : 0) | (v2 > epsilon ? 4 : 0) | (v3 > epsilon ? 8 : 0);
-      if (code === 0 || code === 15) continue;
+    // Accept a block as soon as its corners and its centre agree about the
+    // sign. `corners` is 0 when all four are below zero and 15 when all four
+    // are above; anything else has to be refined.
+    if (corners === 0 || corners === 15) {
+      const middle = field((x0 + x1) / 2, (y0 + y1) / 2);
+      if (!Number.isFinite(middle) || positive(middle, 0) === positive(tl, 0)) return;
+    }
 
-      const top = () => crossing(x0, y0, v0, x1, y0, v1);
-      const right = () => crossing(x1, y0, v1, x1, y1, v2);
-      const bottom = () => crossing(x0, y1, v3, x1, y1, v2);
-      const left = () => crossing(x0, y0, v0, x0, y1, v3);
+    if (x1 - x0 <= minCell && y1 - y0 <= minCell) {
+      cellSegments(x0, y0, x1, y1, { tl, tr, br, bl }, segments);
+      return;
+    }
 
-      switch (code) {
-        case 1:
-        case 14:
-          segments.push({ x0: left()[0], y0: left()[1], x1: top()[0], y1: top()[1] });
-          break;
-        case 2:
-        case 13:
-          segments.push({ x0: top()[0], y0: top()[1], x1: right()[0], y1: right()[1] });
-          break;
-        case 3:
-        case 12:
-          segments.push({ x0: left()[0], y0: left()[1], x1: right()[0], y1: right()[1] });
-          break;
-        case 4:
-        case 11:
-          segments.push({ x0: right()[0], y0: right()[1], x1: bottom()[0], y1: bottom()[1] });
-          break;
-        case 6:
-        case 9:
-          segments.push({ x0: top()[0], y0: top()[1], x1: bottom()[0], y1: bottom()[1] });
-          break;
-        case 7:
-        case 8:
-          segments.push({ x0: left()[0], y0: left()[1], x1: bottom()[0], y1: bottom()[1] });
-          break;
-        case 5: {
-          // Saddle: exactly two opposite corners are inside. Join them so the
-          // two regions touch at a point instead of one swallowing the other.
-          const pairs: Array<[() => [number, number], () => [number, number]]> =
-            code === 5
-              ? [[left, top], [right, bottom]]
-              : [[left, bottom], [top, right]];
-          for (const [a, b] of pairs) {
-            const p = a();
-            const q = b();
-            segments.push({ x0: p[0], y0: p[1], x1: q[0], y1: q[1] });
-          }
-          break;
-        }
-        default:
-          break;
+    if (depth >= MAX_DEPTH) {
+      if (Number.isFinite(tl) && Number.isFinite(tr) && Number.isFinite(br) && Number.isFinite(bl)) {
+        cellSegments(x0, y0, x1, y1, { tl, tr, br, bl }, segments);
       }
+      return;
+    }
+
+    const midX = (x0 + x1) / 2;
+    const midY = (y0 + y1) / 2;
+    visit(x0, y0, midX, midY, depth + 1);
+    visit(midX, y0, x1, midY, depth + 1);
+    visit(x0, midY, midX, y1, depth + 1);
+    visit(midX, midY, x1, y1, depth + 1);
+  };
+
+  const stepX = (maxX - minX) / baseCells;
+  const stepY = (maxY - minY) / baseCells;
+  for (let column = 0; column < baseCells; column += 1) {
+    const x0 = minX + column * stepX;
+    const x1 = column === baseCells - 1 ? maxX : x0 + stepX;
+    for (let row = 0; row < baseCells; row += 1) {
+      const y0 = minY + row * stepY;
+      const y1 = row === baseCells - 1 ? maxY : y0 + stepY;
+      visit(x0, y0, x1, y1, 0);
     }
   }
 
   return segments;
 }
 
-/** A flat list of vertices, ready to hand to `ctx.fill()`. */
-export type FillPolygon = number[];
+/* --------------------------------------------------------------- regions */
 
 /**
- * Cover the cells where `field * sign > 0` with polygons that follow the
- * boundary. Marching squares gives us the geometry per cell, so the fill hugs
- * the curve instead of showing a staircase.
+ * Classify the window into blocks that are entirely inside, entirely outside,
+ * or straddle the boundary. Filling only has to evaluate the field in the
+ * straddling blocks, so the cost follows the boundary rather than the area.
  */
-export function fillPolygons(
+export interface FillPartition {
+  /** Blocks across and down the pixel grid. */
+  columns: number;
+  rows: number;
+  /** Block edge, in pixels. */
+  block: number;
+  /** 1 inside, 0 outside, 2 varies across the block. */
+  state: Uint8Array;
+}
+
+export const INSIDE = 1;
+export const OUTSIDE = 0;
+export const MIXED = 2;
+
+export function partitionField(
   field: (x: number, y: number) => number,
-  options: ContourOptions & { sign: number },
-): FillPolygon[] {
-  const { minX, maxX, minY, maxY, sign } = options;
-  const epsilon = options.epsilon ?? 0;
+  bounds: FieldBounds,
+  width: number,
+  height: number,
+  block = 8,
+): FillPartition {
+  const columns = Math.max(1, Math.ceil(width / block));
+  const rows = Math.max(1, Math.ceil(height / block));
+  const state = new Uint8Array(columns * rows);
 
-  const columns = clampCells(options.columns);
-  const rows = clampCells(options.rows);
-  const stepX = (maxX - minX) / columns;
-  const stepY = (maxY - minY) / rows;
-
-  const width = columns + 1;
-  const cache = new Float64Array(width * (rows + 1));
-  const filled = new Uint8Array(width * (rows + 1));
-
-  const at = (column: number, row: number): number => {
-    const index = row * width + column;
-    if (filled[index] === 0) {
-      const value = field(minX + column * stepX, minY + row * stepY);
-      cache[index] = Number.isFinite(value) ? value * sign : NaN;
-      filled[index] = 1;
-    }
-    return cache[index]!;
-  };
-
-  const polygons: FillPolygon[] = [];
+  const spanX = (bounds.maxX - bounds.minX) / width;
+  const spanY = (bounds.maxY - bounds.minY) / height;
+  const at = (pixelX: number, pixelY: number) => field(bounds.minX + pixelX * spanX, bounds.maxY - pixelY * spanY);
 
   for (let row = 0; row < rows; row += 1) {
+    const top = row * block;
+    const bottom = Math.min(height, top + block) - 1;
     for (let column = 0; column < columns; column += 1) {
-      const x0 = minX + column * stepX;
-      const y0 = minY + row * stepY;
-      const x1 = x0 + stepX;
-      const y1 = y0 + stepY;
+      const left = column * block;
+      const right = Math.min(width, left + block) - 1;
+      const midX = (left + right) / 2;
+      const midY = (top + bottom) / 2;
 
-      const v0 = at(column, row);
-      const v1 = at(column + 1, row);
-      const v2 = at(column + 1, row + 1);
-      const v3 = at(column, row + 1);
-      if (!Number.isFinite(v0) || !Number.isFinite(v1) || !Number.isFinite(v2) || !Number.isFinite(v3)) continue;
-
-      const code = (v0 > epsilon ? 1 : 0) | (v1 > epsilon ? 2 : 0) | (v2 > epsilon ? 4 : 0) | (v3 > epsilon ? 8 : 0);
-      if (code === 0) continue;
-
-      const top = crossing(x0, y0, v0, x1, y0, v1);
-      const right = crossing(x1, y0, v1, x1, y1, v2);
-      const bottom = crossing(x0, y1, v3, x1, y1, v2);
-      const left = crossing(x0, y0, v0, x0, y1, v3);
-
-      if (code === 15) {
-        polygons.push([x0, y0, x1, y0, x1, y1, x0, y1]);
-        continue;
+      // A 3x3 probe. Corners alone miss a boundary that clips a corner, and a
+      // block wrongly called uniform is painted as a hard rectangle, which shows
+      // up as a staircase along the edge of a region.
+      let positive = 0;
+      let valid = 0;
+      for (let i = 0; i < 3; i += 1) {
+        for (let j = 0; j < 3; j += 1) {
+          const value = at(i === 1 ? midX : i === 0 ? left : right, j === 1 ? midY : j === 0 ? top : bottom);
+          if (!Number.isFinite(value)) continue;
+          valid += 1;
+          if (value > 0) positive += 1;
+        }
       }
 
-      switch (code) {
-        case 1:
-          polygons.push([x0, y0, left[0], left[1], top[0], top[1]]);
-          break;
-        case 2:
-          polygons.push([x1, y0, right[0], right[1], top[0], top[1]]);
-          break;
-        case 4:
-          polygons.push([x1, y1, right[0], right[1], bottom[0], bottom[1]]);
-          break;
-        case 8:
-          polygons.push([x0, y1, left[0], left[1], bottom[0], bottom[1]]);
-          break;
-        case 7:
-          polygons.push([x0, y0, x1, y0, x1, y1, bottom[0], bottom[1], left[0], left[1]]);
-          break;
-        case 11:
-          polygons.push([x1, y0, x1, y1, x0, y1, left[0], left[1], top[0], top[1]]);
-          break;
-        case 13:
-          polygons.push([x0, y0, x1, y0, right[0], right[1], bottom[0], bottom[1], x0, y1]);
-          break;
-        case 14:
-          polygons.push([x0, y0, left[0], left[1], bottom[0], bottom[1], x1, y1, x1, y0]);
-          break;
-        case 5: {
-          const centre = (v0 + v1 + v2 + v3) / 4;
-          if (centre > 0) {
-            polygons.push([x0, y0, left[0], left[1], top[0], top[1]]);
-            polygons.push([x1, y1, right[0], right[1], bottom[0], bottom[1]]);
-          } else {
-            polygons.push([x1, y0, right[0], right[1], top[0], top[1]]);
-            polygons.push([x0, y1, left[0], left[1], bottom[0], bottom[1]]);
-          }
-          break;
+      state[row * columns + column] =
+        valid === 0 || positive === 0
+          ? OUTSIDE
+          : positive === valid
+            ? INSIDE
+            : MIXED;
+    }
+  }
+
+  // Widen the mixed set by one block. A block the probes read as uniform can
+  // still clip a boundary that passes through its middle; without this the
+  // painted rectangle ends short of the neighbouring block's per-pixel edge and
+  // the region grows a visible staircase.
+  const widened = state.slice();
+  for (let row = 0; row < rows; row += 1) {
+    for (let column = 0; column < columns; column += 1) {
+      if (state[row * columns + column] !== MIXED) continue;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const y = row + dy;
+          const x = column + dx;
+          if (y < 0 || y >= rows || x < 0 || x >= columns) continue;
+          widened[y * columns + x] = MIXED;
         }
-        case 10: {
-          const centre = (v0 + v1 + v2 + v3) / 4;
-          if (centre > 0) {
-            polygons.push([x1, y0, right[0], right[1], top[0], top[1]]);
-            polygons.push([x0, y1, left[0], left[1], bottom[0], bottom[1]]);
-          } else {
-            polygons.push([x0, y0, left[0], left[1], top[0], top[1]]);
-            polygons.push([x1, y1, right[0], right[1], bottom[0], bottom[1]]);
-          }
-          break;
-        }
-        default:
-          break;
       }
     }
   }
 
-  return polygons;
-}
-function clampCells(value: number): number {
-  return Math.max(2, Math.min(Math.round(value), MAX_CELLS));
+  return { columns, rows, block, state: widened };
 }

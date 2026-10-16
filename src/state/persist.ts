@@ -1,5 +1,5 @@
 import { DEFAULT_SETTINGS, DEFAULT_VIEWPORT, type Document, type Item } from "../document/types";
-import { welcomeDocument } from "../document/welcome";
+import { emptyDocument } from "./store";
 
 /**
  * Persistence.
@@ -172,13 +172,7 @@ function sanitizeSettings(value: unknown): Document["settings"] {
     showAxes: flag("showAxes", settings.showAxes),
     showNumbers: flag("showNumbers", settings.showNumbers),
     showOrigin: flag("showOrigin", settings.showOrigin),
-    showXAxis: flag("showXAxis", settings.showXAxis),
-    showYAxis: flag("showYAxis", settings.showYAxis),
     showDragHint: flag("showDragHint", settings.showDragHint),
-    tablesVisible: flag("tablesVisible", settings.tablesVisible),
-    labelSize: input.labelSize === "small" || input.labelSize === "normal" || input.labelSize === "large"
-      ? input.labelSize
-      : settings.labelSize,
   };
 }
 
@@ -237,25 +231,11 @@ export function saveStored(doc: Document): void {
   }, 400);
 }
 
-export function clearStored(): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    /* ignore */
-  }
-}
-
 /**
- * The document a fresh visit should show. A shared link always wins; after
- * that, the last session; otherwise a small tour of what openmos can do.
+ * The document a fresh visit should show. A shared link always wins, then the
+ * last session, and otherwise an empty document — no sample graph, so the
+ * first thing on screen is whatever the user typed.
  */
 export function initialDocument(): Document {
-  const fromHash = readHashDocument();
-  if (fromHash) return fromHash;
-
-  const stored = loadStored();
-  if (stored && stored.items.length > 0) return stored;
-
-  return welcomeDocument();
+  return readHashDocument() ?? loadStored() ?? emptyDocument();
 }
