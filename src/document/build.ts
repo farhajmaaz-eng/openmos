@@ -1,13 +1,13 @@
+import { integrate } from "./analysis";
 import { collectVars } from "../math/ast";
 import { compile, compileField, type FieldFn, type UserFunction } from "../math/compile";
 import { MathError } from "../math/errors";
 import { parse, parseFunctionSignature, parseGraphSource, splitRelation } from "../math/parser";
 import { tokenize } from "../math/tokenize";
 import { toLatex } from "../math/latex";
-import type { Document, ExpressionItem, Item, PointItem, TableItem } from "./types";
+import type { Area, Document, ExpressionItem, FillStyle, Item, LineStyle, PointItem, TableItem } from "./types";
 
-export type LineStyle = "solid" | "dashed" | "dotted";
-export type FillStyle = "solid" | "semi" | "none";
+export type { LineStyle, FillStyle } from "./types";
 
 /** Values available to an expression: slider and variable values. */
 export type GraphScope = Record<string, number>;
@@ -27,6 +27,10 @@ export interface CurveDrawable extends DrawableBase {
   lineStyle: LineStyle;
   domain?: [number, number];
   labelHidden: boolean;
+  /** Shade between the curve and the x-axis over this x range. */
+  area?: Area;
+  /** Draw the tangent line where the pointer is. */
+  tangent: boolean;
 }
 
 export interface ParametricDrawable extends DrawableBase {
@@ -91,6 +95,8 @@ export interface BuildResult {
   errors: Map<string, string>;
   /** LaTeX for every expression row, keyed by item id. */
   latex: Map<string, string>;
+  /** Area under each shaded curve, keyed by item id; absent when undefined. */
+  areas: Map<string, number>;
 }
 
 const PARAM_DOMAIN: [number, number] = [-Math.PI * 2, Math.PI * 2];
@@ -195,6 +201,7 @@ export function buildDocument(document: Document): BuildResult {
   const points: PointItem[] = [];
   const errors = new Map<string, string>();
   const latex = new Map<string, string>();
+  const areas = new Map<string, number>();
 
   for (const item of items) {
     if (item.kind === "slider") continue;
@@ -229,9 +236,25 @@ export function buildDocument(document: Document): BuildResult {
     drawables.push(result.drawable);
     latex.set(item.id, result.latex);
     if (result.drawable.kind === "bad") errors.set(item.id, result.drawable.message);
+
+    // Shaded area is reported with the build so the row and the graph agree on
+    // the number even if one of them is reading a stale document.
+    if (result.drawable.kind === "curve" && result.drawable.area) {
+      const [from, to] = result.drawable.area;
+      const value = integrate(result.drawable.fn, scope, from, to);
+      if (value !== null) areas.set(item.id, value);
+    }
   }
 
-  return { drawables, tables, points, scope, errors, latex };
+  return { drawables, tables, points, scope, errors, latex, areas };
+}
+
+/** A stored range is only usable if both ends are real numbers. */
+export function normaliseArea(area: Area | undefined): Area | undefined {
+  if (!area) return undefined;
+  const [from, to] = area;
+  if (!Number.isFinite(from) || !Number.isFinite(to) || from === to) return undefined;
+  return [from, to];
 }
 
 function safeLatex(source: string, declared: Set<string>): string {
@@ -349,6 +372,8 @@ function buildExpression(item: ExpressionItem, env: CompileEnv): ExpressionBuild
             lineStyle,
             domain: item.domain,
             labelHidden: item.labelHidden ?? false,
+            area: normaliseArea(item.area),
+            tangent: item.tangent === true,
           },
           latex,
         };
@@ -412,6 +437,8 @@ function buildExpression(item: ExpressionItem, env: CompileEnv): ExpressionBuild
         lineStyle,
         domain: item.domain,
         labelHidden: item.labelHidden ?? false,
+        area: normaliseArea(item.area),
+        tangent: item.tangent === true,
       },
       latex,
     };

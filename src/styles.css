@@ -1271,3 +1271,313 @@ kbd {
     font-size: 16px;
   }
 }
+
+/* ------------------------------------------------------------ row tools */
+
+/* The per-row extras live on their own line so they never squeeze the input. */
+.row-tools {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  padding-left: 1px;
+}
+
+.chip {
+  min-width: 24px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chip:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.chip.is-on {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.area-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+  min-width: 0;
+}
+
+.area-input {
+  width: 66px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.area-dash {
+  color: var(--text-faint);
+  font-size: 11.5px;
+}
+
+.area-value {
+  margin-left: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+/* ----------------------------------------------------------- style menu */
+
+.style-menu {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.swatch-grid {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  grid-template-columns: repeat(5, 18px);
+  gap: 3px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+
+.swatch-dot {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  outline-offset: 1px;
+}
+
+.style-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 30;
+  display: grid;
+  gap: 9px;
+  width: 194px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: var(--shadow-md);
+}
+
+/* Inside the popover the swatches are in flow, not floating. */
+.style-popover .swatch-grid {
+  position: static;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.style-group {
+  display: grid;
+  gap: 5px;
+}
+
+.style-label {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.segmented {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-sunken);
+}
+
+.segment {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  height: 24px;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.segment:hover {
+  background: var(--bg-hover);
+}
+
+.segment[aria-pressed="true"] {
+  background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: var(--shadow-sm);
+}
+
+.segment-text {
+  font-size: 11.5px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------- panels and export */
+
+.share-section {
+  display: grid;
+  gap: 7px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.share-heading {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.share-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.share-row .segmented {
+  flex: 0 0 auto;
+}
+
+.share-row .text-button {
+  flex: 1;
+}
+
+.share-note.is-quiet,
+.panel-note.is-quiet {
+  margin: 0;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.panel-note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.intersection-list {
+  display: grid;
+  gap: 12px;
+}
+
+.intersection-pair {
+  display: grid;
+  gap: 6px;
+}
+
+.intersection-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.curve-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.curve-tag-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.intersection-x {
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.intersection-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.intersection-point {
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.intersection-point:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip-icon {
+  display: grid;
+  place-items: center;
+  padding: 0;
+}

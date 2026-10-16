@@ -8,6 +8,7 @@ import { INSIDE, MIXED, OUTSIDE, contourSegments, partitionField } from "../src/
 import { fitModel } from "../src/document/regression.ts";
 import { decodeDocument, encodeDocument, sanitize } from "../src/state/persist.ts";
 import { niceStep, tickValues } from "../src/graph/ticks.ts";
+import { dataBounds, findIntersections, integrate, slope, viewportFor } from "../src/document/analysis.ts";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_VIEWPORT,
@@ -334,6 +335,112 @@ console.log("\\n--- shaded regions ---");
   let straddling = 0;
   for (const verdict of thin.state) if (verdict === MIXED) straddling += 1;
   checkThat("a boundary thinner than a block is still located", straddling > 0, `${straddling} straddling blocks`);
+}
+
+console.log("\\n--- analysis ---");
+{
+  const scope = {};
+  const f = (x: number) => x * x;
+  const near = (label: string, got: number | null, want: number, tolerance = 1e-6) =>
+    checkThat(
+      label,
+      got !== null && Math.abs(got - want) <= tolerance,
+      got === null ? "no value" : `${got.toFixed(8)} vs ${want}`,
+    );
+
+  near("integral of x^2 over [0, 3]", integrate(f, scope, 0, 3), 9, 1e-9);
+  near("the bounds may be given either way round", integrate(f, scope, 3, 0), 9, 1e-9);
+  near("integral of sin over [0, pi]", integrate((x) => Math.sin(x), scope, 0, Math.PI), 2, 1e-6);
+  near("a signed area", integrate((x) => -x, scope, 0, 2), -2, 1e-9);
+  checkThat("a range running through a pole reports nothing", integrate((x) => 1 / x, scope, -1, 1) === null);
+  checkThat("a zero-width range reports nothing", integrate(f, scope, 1, 1) === null);
+
+  near("slope of x^2 at 3", slope(f, scope, 3, 0.01), 6, 1e-4);
+  near("slope of sin at 0", slope((x) => Math.sin(x), scope, 0, 0.01), 1, 1e-6);
+  checkThat("slope through a hole reports nothing", slope((x) => Math.sqrt(x), scope, -1, 0.01) === null);
+
+  const parabola = { id: "a", color: "#000", label: "", errorStart: -1, errorEnd: -1, kind: "curve" as const, fn: (x: number) => x * x, lineStyle: "solid" as const, labelHidden: false, tangent: false };
+  const line = { ...parabola, id: "b", fn: (x: number) => x + 2 };
+  const window = { minX: -10, maxX: 10, minY: -10, maxY: 10 };
+  const crossings = findIntersections(parabola, line, scope, window);
+  check("x^2 and x + 2 cross twice", crossings.length, 2);
+  near("at x = -1", crossings[0]?.x ?? NaN, -1, 1e-6);
+  near("and x = 2", crossings[1]?.x ?? NaN, 2, 1e-6);
+  near("with y on the parabola", crossings[1]?.y ?? NaN, 4, 1e-6);
+
+  const shifted = { ...line, fn: (x: number) => x * x + 1 };
+  // The new per-row settings have to survive a share link.
+  const decorated = sanitize({
+    items: [
+      {
+        id: "e1",
+        kind: "expression",
+        color: "#2f6feb",
+        source: "y = x^2",
+        area: [-2, 3],
+        tangent: true,
+        lineStyle: "dashed",
+        fill: "semi",
+      },
+    ],
+  });
+  const row = decorated.items[0] as Record<string, unknown>;
+  check("the shaded area survives a share link", JSON.stringify(row.area), JSON.stringify([-2, 3]));
+  check("the tangent switch survives a share link", row.tangent, true);
+  check("the line style survives a share link", row.lineStyle, "dashed");
+  check("the fill survives a share link", row.fill, "semi");
+
+  const junked = sanitize({
+    items: [{ id: "e1", kind: "expression", color: "#000", source: "y=x", area: ["a", 3], tangent: "yes" }],
+  });
+  const junkRow = junked.items[0] as Record<string, unknown>;
+  checkThat("a broken area range is dropped", junkRow.area === undefined, JSON.stringify(junkRow.area));
+  checkThat("a non-boolean tangent is dropped", junkRow.tangent === undefined, JSON.stringify(junkRow.tangent));
+
+  check("a curve above another has no crossings", findIntersections(parabola, shifted, scope, window).length, 0);
+  check("a window off to the side finds nothing", findIntersections(parabola, line, scope, { minX: 50, maxX: 60, minY: -1, maxY: 1 }).length, 0);
+
+  // A curve restricted to a domain must not be intersected outside it.
+  const clamped = { ...parabola, fn: (x: number) => x, domain: [0, 1] as [number, number] };
+  check("a domain is respected", findIntersections(clamped, line, scope, window).length, 0);
+
+  // Roots that land exactly on a sample have to be found, not stepped over.
+  const tidy = findIntersections({ ...parabola, fn: (x: number) => x * x }, { ...parabola, fn: (x: number) => x + 2 }, scope, { minX: -8, maxX: 8, minY: -8, maxY: 8 }, 400);
+  check("roots sitting on the sample grid are still found", tidy.length, 2);
+  const messy = findIntersections({ ...parabola, fn: (x: number) => x * x - 2 }, { ...parabola, fn: (x: number) => x - 1 }, scope, { minX: -8, maxX: 8, minY: -8, maxY: 8 }, 400);
+  checkThat("and roots that are not on the grid", messy.length === 2, JSON.stringify(messy));
+}
+
+console.log("\\n--- framing ---");
+{
+  const scope = {};
+  const size = { width: 800, height: 600 };
+  // A circle of radius 10 is only in view once the search has widened.
+  const circle = {
+    id: "c",
+    color: "#000",
+    label: "",
+    errorStart: -1,
+    errorEnd: -1,
+    kind: "implicit" as const,
+    field: (x: number, y: number) => x * x + y * y - 100,
+    lineStyle: "solid" as const,
+    fill: "none" as const,
+  };
+
+  const far = dataBounds([circle], [], scope, { x: 0, y: 0, scale: 1 / 1000 }, size);
+  checkThat("a circle far below the window is still found", far !== null, JSON.stringify(far));
+  const fitted = viewportFor(far!, size);
+  checkThat("and framed with room around it", fitted.scale * size.width >= 20, `${(fitted.scale * size.width).toFixed(1)} units across`);
+
+  const near = dataBounds([circle], [], scope, { x: 0, y: 0, scale: 1 / 100 }, size);
+  checkThat(
+    "the same circle from a wider window gives a similar answer",
+    near !== null && Math.abs(viewportFor(near, size).scale - fitted.scale) < fitted.scale * 0.5,
+    `${near ? viewportFor(near, size).scale.toFixed(6) : "none"} vs ${fitted.scale.toFixed(6)}`,
+  );
+
+  checkThat("an empty board frames nothing", dataBounds([], [], scope, { x: 0, y: 0, scale: 0.02 }, size) === null);
 }
 
 console.log("\\n--- sampling budget ---");

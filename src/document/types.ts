@@ -15,6 +15,9 @@ export interface BaseItem {
 }
 
 export type FillStyle = "solid" | "semi" | "none";
+export type LineStyle = "solid" | "dashed" | "dotted";
+/** The x range a curve's area is shaded and integrated over. */
+export type Area = [number, number];
 
 export interface ExpressionItem extends BaseItem {
   kind: "expression";
@@ -23,7 +26,7 @@ export interface ExpressionItem extends BaseItem {
   /** Override for the label shown on the graph; defaults to the source. */
   label?: string;
   /** `dotted` and `dashed` are used to distinguish overlapping curves. */
-  lineStyle?: "solid" | "dashed" | "dotted";
+  lineStyle?: LineStyle;
   /** Restrict the curve to a domain, for piecewise-free clipping. */
   domain?: [number, number];
   /** Restrict a parametric curve's parameter range. */
@@ -32,6 +35,10 @@ export interface ExpressionItem extends BaseItem {
   fill?: FillStyle;
   /** Render a solid disc of the expression's value instead of a curve. */
   labelHidden?: boolean;
+  /** Shade between the curve and the x-axis over this x range. */
+  area?: Area;
+  /** Draw the tangent line where the pointer is. */
+  tangent?: boolean;
 }
 
 export interface TableItem extends BaseItem {

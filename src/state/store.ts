@@ -3,6 +3,7 @@ import {
   DEFAULT_VIEWPORT,
   colorAt,
   nextId,
+  type Area,
   type Document,
   type Item,
   type ItemKind,
@@ -19,7 +20,7 @@ export interface AppState {
   past: Document[];
   future: Document[];
   /** Open overlays, if any. */
-  panel: "none" | "settings" | "shortcuts" | "functions" | "share";
+  panel: "none" | "settings" | "shortcuts" | "functions" | "share" | "intersections";
 }
 
 const MAX_HISTORY = 120;
@@ -45,7 +46,12 @@ export type Action =
   | { type: "moveItem"; id: string; delta: number }
   /** `transient` collapses a burst of edits into a single undo step. */
   | { type: "setSource"; id: string; source: string; transient?: boolean }
-  | { type: "setField"; id: string; field: string; value: string | number | boolean }
+  /**
+   * `value: null` removes the field, which is how a toggle switches itself off.
+   * `transient` collapses a burst of edits into one undo step, for fields a
+   * number input writes to on every keystroke.
+   */
+  | { type: "setField"; id: string; field: string; value: string | number | boolean | Area | null; transient?: boolean }
   | { type: "setColor"; id: string; color: string }
   | { type: "toggleHidden"; id: string }
   | { type: "setSliderValue"; id: string; value: number }
@@ -173,11 +179,15 @@ export function reducer(state: AppState, action: Action): AppState {
     }
 
     case "setField": {
-      const doc = updateItem(state.doc, action.id, (item) => ({
-        ...item,
-        [action.field]: action.value,
-      })) as Document;
-      return withHistory(state, doc, TRANSIENT_FIELDS.has(action.field));
+      const doc = updateItem(state.doc, action.id, (item) => {
+        if (action.value === null) {
+          const next = { ...item } as unknown as Record<string, unknown>;
+          delete next[action.field];
+          return next as unknown as Item;
+        }
+        return { ...item, [action.field]: action.value };
+      }) as Document;
+      return withHistory(state, doc, action.transient === true || TRANSIENT_FIELDS.has(action.field));
     }
 
     case "setColor": {

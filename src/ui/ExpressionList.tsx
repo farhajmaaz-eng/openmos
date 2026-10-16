@@ -1,13 +1,27 @@
-import { memo, useCallback, useMemo, useState, type ReactNode } from "react";
-import type { BuildResult } from "../document/build";
-import type { Document, ExpressionItem, PointItem, SliderItem, TableItem } from "../document/types";
+import { memo, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import type { BuildResult, Drawable } from "../document/build";
+import type { Area, Document, ExpressionItem, PointItem, SliderItem, TableItem, Viewport } from "../document/types";
 import { formatNumber, roundTo } from "../math/format";
 import { MODEL_LABELS, MODEL_ORDER, fitModel } from "../document/regression";
 import { useDispatch } from "../state/useStore";
 import { addExpression, addItemOfKind } from "../state/actions";
-import { ColorMenu, Latex } from "./ColorMenu";
+import { ColorMenu, Latex, StyleMenu } from "./ColorMenu";
 import { MathField } from "./MathField";
-import { IconArrowDown, IconArrowUp, IconCopy, IconEye, IconEyeOff, IconPoint, IconSlider, IconTable, IconTrash } from "./Icon";
+import {
+  IconArrowDown,
+  IconArrowUp,
+  IconCopy,
+  IconEye,
+  IconEyeOff,
+  IconIntegral,
+  IconPause,
+  IconPlay,
+  IconPoint,
+  IconSlider,
+  IconTable,
+  IconTangent,
+  IconTrash,
+} from "./Icon";
 
 /* -------------------------------------------------------------------- shell */
 
@@ -19,6 +33,10 @@ interface RowShellProps {
   showVisibility: boolean;
   onSelect: () => void;
   onColor: (color: string) => void;
+  /** Replaces the plain colour swatch for rows that have more to offer. */
+  styleMenu?: ReactNode;
+  /** Sits between the swatch and the body, for row-specific controls. */
+  leading?: ReactNode;
   onDelete: () => void;
   onDuplicate: () => void;
   onMove: (delta: number) => void;
@@ -34,6 +52,8 @@ const RowShell = memo(function RowShell({
   showVisibility,
   onSelect,
   onColor,
+  styleMenu,
+  leading,
   onDelete,
   onDuplicate,
   onMove,
@@ -51,7 +71,8 @@ const RowShell = memo(function RowShell({
       </div>
       <div className="row-body">
         <div className="row-main">
-          <ColorMenu color={color} onChange={onColor} />
+          {styleMenu ?? <ColorMenu color={color} onChange={onColor} />}
+          {leading}
           {children}
         </div>
       </div>
@@ -115,6 +136,9 @@ const ExpressionRow = memo(function ExpressionRow({
   error,
   selected,
   focused,
+  kind,
+  areaValue,
+  viewport,
 }: {
   item: ExpressionItem;
   index: number;
@@ -122,8 +146,45 @@ const ExpressionRow = memo(function ExpressionRow({
   error: string | undefined;
   selected: boolean;
   focused: boolean;
+  kind: Drawable["kind"];
+  areaValue: number | undefined;
+  viewport: Viewport;
 }) {
   const dispatch = useDispatch();
+
+  const set = useCallback(
+    (field: string, value: string | number | boolean | Area | null, transient?: boolean) =>
+      dispatch({ type: "setField", id: item.id, field, value, transient }),
+    [dispatch, item.id],
+  );
+
+  const lineStyle = item.lineStyle ?? "solid";
+  // A region always shades its inside; `none` only makes sense for a curve.
+  const fill = item.fill ?? (kind === "region" ? "semi" : "none");
+
+  // Turning the area on starts it over what is on screen, which is nearly
+  // always what the user means by "the area under this".
+  const toggleArea = useCallback(() => {
+    if (item.area) {
+      set("area", null);
+      return;
+    }
+    // Half the width of the window, to the nearest tenth.
+    const half = Math.round(viewport.scale * 200 * 10) / 10;
+    const middle = Math.round(viewport.x * 10) / 10;
+    set("area", [middle - half, middle + half]);
+  }, [item.area, set, viewport]);
+
+  const setAreaBound = useCallback(
+    (which: 0 | 1, value: number) => {
+      if (!item.area) return;
+      const next: [number, number] = [...item.area] as [number, number];
+      next[which] = value;
+      // Typed one key at a time, so it must be a single undo step.
+      set("area", next, true);
+    },
+    [item.area, set],
+  );
 
   return (
     <RowShell
@@ -134,6 +195,17 @@ const ExpressionRow = memo(function ExpressionRow({
       showVisibility
       onSelect={() => dispatch({ type: "select", ids: [item.id], focus: item.id })}
       onColor={(color) => dispatch({ type: "setColor", id: item.id, color })}
+      styleMenu={
+        <StyleMenu
+          color={item.color}
+          lineStyle={lineStyle}
+          fill={fill}
+          fillOptional={kind === "implicit"}
+          onColor={(color) => dispatch({ type: "setColor", id: item.id, color })}
+          onLineStyle={(value) => set("lineStyle", value)}
+          onFill={(value) => set("fill", value)}
+        />
+      }
       onDelete={() => dispatch({ type: "removeItem", id: item.id })}
       onDuplicate={() => dispatch({ type: "duplicateItem", id: item.id })}
       onMove={(delta) => dispatch({ type: "moveItem", id: item.id, delta })}
@@ -155,10 +227,101 @@ const ExpressionRow = memo(function ExpressionRow({
           onArrowUp={() => dispatch({ type: "moveItem", id: item.id, delta: -1 })}
         />
         {error ? <div className="row-message">{error}</div> : null}
+
+        {kind === "curve" ? (
+          <div className="row-tools">
+            <button
+              type="button"
+              className={`chip${item.area ? " is-on" : ""}`}
+              aria-pressed={Boolean(item.area)}
+              aria-label={item.area ? "Area: on" : "Area: off"}
+              title="Shade the area under the curve"
+              onClick={toggleArea}
+            >
+              <IconIntegral size={14} />
+            </button>
+            <button
+              type="button"
+              className={`chip${item.tangent ? " is-on" : ""}`}
+              aria-pressed={item.tangent === true}
+              aria-label={item.tangent ? "Tangent: on" : "Tangent: off"}
+              title="Draw the tangent line where the pointer is"
+              onClick={() => set("tangent", item.tangent !== true)}
+            >
+              <IconTangent size={14} />
+            </button>
+
+            {item.area ? (
+              <div className="area-controls">
+                <NumberField
+                  className="area-input"
+                  ariaLabel="Area from x"
+                  value={item.area[0]}
+                  onChange={(value) => setAreaBound(0, value)}
+                />
+                <span className="area-dash">to</span>
+                <NumberField
+                  className="area-input"
+                  ariaLabel="Area to x"
+                  value={item.area[1]}
+                  onChange={(value) => setAreaBound(1, value)}
+                />
+                <span className="area-value">
+                  {areaValue === undefined ? "…" : formatNumber(areaValue, 4)}
+                </span>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </RowShell>
   );
 });
+
+/**
+ * A number input that can actually be typed into.
+ *
+ * Writing the formatted value straight back means every keystroke is replaced
+ * by it, so a decimal point can never be entered: `-3` is reformatted to `-3`
+ * and the `.` is lost. The text being typed is therefore held locally and only
+ * tidied up when the field is left.
+ */
+function NumberField({
+  className,
+  ariaLabel,
+  value,
+  onChange,
+}: {
+  className: string;
+  ariaLabel: string;
+  value: number;
+  onChange: (value: number) => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const shown = draft ?? formatAreaBound(value);
+
+  return (
+    <input
+      className={className}
+      value={shown}
+      aria-label={ariaLabel}
+      inputMode="decimal"
+      onChange={(event) => {
+        const text = event.target.value;
+        setDraft(text);
+        const parsed = Number.parseFloat(text);
+        if (Number.isFinite(parsed)) onChange(parsed);
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  );
+}
+
+function formatAreaBound(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  return String(Number.parseFloat(value.toFixed(6)));
+}
+
 
 /* ------------------------------------------------------------------ slider */
 
@@ -185,6 +348,7 @@ const SliderRow = memo(function SliderRow({
 }) {
   const dispatch = useDispatch();
   const decimals = useMemo(() => decimalsFor(item), [item]);
+  const [playing, setPlaying] = useState(false);
 
   const setValue = useCallback(
     (raw: number) => {
@@ -194,6 +358,34 @@ const SliderRow = memo(function SliderRow({
     [dispatch, item],
   );
 
+  // Animation walks the value rather than the frames, so a slow machine takes
+  // the same time over the range as a fast one.
+  useEffect(() => {
+    if (!playing) return undefined;
+    const span = item.max - item.min;
+    if (!(span > 0)) {
+      setPlaying(false);
+      return undefined;
+    }
+
+    let frame = 0;
+    let previous = performance.now();
+    const tick = (now: number) => {
+      const elapsed = (now - previous) / 1000;
+      previous = now;
+      // A full sweep of the range every four seconds.
+      const next = item.value + (elapsed * span) / 4;
+      dispatch({
+        type: "setSliderValue",
+        id: item.id,
+        value: next > item.max ? item.min : clampToSlider(item, next),
+      });
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [dispatch, item.id, item.max, item.min, item.value, playing]);
+
   return (
     <RowShell
       index={index}
@@ -201,6 +393,18 @@ const SliderRow = memo(function SliderRow({
       hidden={item.hidden === true}
       color={item.color}
       showVisibility={false}
+      leading={
+        <button
+          type="button"
+          className={`chip chip-icon${playing ? " is-on" : ""}`}
+          aria-pressed={playing}
+          aria-label={`Animate ${item.variable}`}
+          title={playing ? "Stop" : "Animate"}
+          onClick={() => setPlaying((value) => !value)}
+        >
+          {playing ? <IconPause size={13} /> : <IconPlay size={13} />}
+        </button>
+      }
       onSelect={() => dispatch({ type: "select", ids: [item.id], focus: item.id })}
       onColor={(color) => dispatch({ type: "setColor", id: item.id, color })}
       onDelete={() => dispatch({ type: "removeItem", id: item.id })}
@@ -427,11 +631,13 @@ export function ExpressionList({
   items,
   selectedIds,
   focusedId,
+  viewport,
 }: {
   build: BuildResult;
   items: Document["items"];
   selectedIds: string[];
   focusedId: string | null;
+  viewport: Viewport;
 }) {
   const dispatch = useDispatch();
 
@@ -483,6 +689,9 @@ export function ExpressionList({
                 error={build.errors.get(item.id)}
                 selected={selected}
                 focused={focusedId === item.id && selected}
+                kind={build.drawables.find((entry) => entry.id === item.id)?.kind ?? "bad"}
+                areaValue={build.areas.get(item.id)}
+                viewport={viewport}
               />
             );
         }

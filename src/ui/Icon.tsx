@@ -192,3 +192,47 @@ export const IconList = make(
     <path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01" />
   </>,
 );
+
+export const IconFit = make(
+  <>
+    <path d="M4 9V4.5h4.5M20 9V4.5h-4.5M4 15v4.5h4.5M20 15v4.5h-4.5" />
+  </>,
+);
+
+export const IconIntegral = make(
+  <>
+    <path d="M9.5 4.5c-1.6 0-2.2 1.4-2.5 3.4L5.8 15c-.4 2.4-1.2 4.5-3 4.5" />
+    <path d="M4.4 6.2h4.2M3.2 17.8h4.2" />
+  </>,
+);
+
+export const IconTangent = make(
+  <>
+    <path d="M4.5 17.5c2.6 0 4-4.6 6-7.2 1.4-1.9 3-2.8 5.5-2.8" />
+    <path d="M6.6 19.2 18 6.4" />
+  </>,
+);
+
+export const IconCrossings = make(
+  <>
+    <path d="M4 6.5c2.6 0 4 3.6 6 6.2 1.7 2.2 3.7 3.4 6.4 3.4" />
+    <path d="M4 17.4c2.6 0 4-3.6 6-6.2C11.7 9 13.7 7.8 16.4 7.8" />
+    <circle cx="10.4" cy="12" r="1.5" />
+  </>,
+);
+
+export const IconPlay = make(<path d="M8.5 5.6 15.5 12l-7 6.4z" />);
+
+export const IconPause = make(
+  <>
+    <path d="M9.2 5.8v12.4M14.8 5.8v12.4" />
+  </>,
+);
+
+export const IconImage = make(
+  <>
+    <rect x="4.2" y="5.2" width="15.6" height="13.6" rx="2" />
+    <path d="M4.4 15.4 9 11l3.4 3.2 2.8-2.4 4.4 4" />
+    <circle cx="15.4" cy="9" r="1.1" />
+  </>,
+);

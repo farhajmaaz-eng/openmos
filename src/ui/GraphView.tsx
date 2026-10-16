@@ -10,8 +10,9 @@ import {
   type RenderInput,
 } from "../graph/renderer";
 import { decimalsForScale, formatNumber } from "../math/format";
+import { dataBounds, slope, viewportFor } from "../document/analysis";
 import { useDispatch } from "../state/useStore";
-import { IconMinus, IconPlus, IconReset } from "./Icon";
+import { IconFit, IconMinus, IconPlus, IconReset } from "./Icon";
 
 const MIN_SCALE = 1e-9;
 const MAX_SCALE = 1e8;
@@ -60,6 +61,9 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
   const pinchRef = useRef<PinchState | null>(null);
   const frameRef = useRef(0);
   const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The hovered x, kept in a ref for the same reason the viewport is: a tangent
+  // line must follow the pointer without a React render on every move.
+  const liveHoverX = useRef<number | null>(null);
 
   const [size, setSize] = useState({ width: 0, height: 0 });
   const [hoverPoint, setHoverPoint] = useState<string | null>(null);
@@ -70,21 +74,6 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
   // React render for every pointer event. Updates are collapsed into a frame.
   const cursorRef = useRef<{ x: number; y: number } | null>(null);
   const cursorFrameRef = useRef(0);
-  const showCursor = useCallback((value: { x: number; y: number } | null) => {
-    cursorRef.current = value;
-    if (cursorFrameRef.current !== 0) return;
-    cursorFrameRef.current = requestAnimationFrame(() => {
-      cursorFrameRef.current = 0;
-      setCursor(cursorRef.current);
-    });
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (cursorFrameRef.current !== 0) cancelAnimationFrame(cursorFrameRef.current);
-    },
-    [],
-  );
 
   const palette: Palette = dark ? DARK_PALETTE : LIGHT_PALETTE;
 
@@ -125,6 +114,13 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
     liveViewport.current = viewport;
   }
 
+  // Tangent lines are the only thing that repaints on a bare pointer move, so
+  // the repaint is only worth asking for when one is switched on.
+  const wantsTangent = useMemo(
+    () => build.drawables.some((entry) => entry.kind === "curve" && entry.tangent),
+    [build.drawables],
+  );
+
   const pendingRef = useRef<RenderInput | null>(null);
   pendingRef.current = {
     viewport: liveViewport.current,
@@ -137,6 +133,7 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
     palette,
     devicePixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
     focusedId,
+    hoverX: liveHoverX.current,
   };
 
   const requestDraw = useCallback(() => {
@@ -149,9 +146,32 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       // A pending frame always paints the newest input rather than whatever
       // the callback happened to close over.
       input.viewport = liveViewport.current;
+      input.hoverX = liveHoverX.current;
       renderer.draw(input);
     });
   }, []);
+
+  const showCursor = useCallback(
+    (value: { x: number; y: number } | null) => {
+      cursorRef.current = value;
+      liveHoverX.current = value ? value.x : null;
+      if (wantsTangent) requestDraw();
+
+      if (cursorFrameRef.current !== 0) return;
+      cursorFrameRef.current = requestAnimationFrame(() => {
+        cursorFrameRef.current = 0;
+        setCursor(cursorRef.current);
+      });
+    },
+    [requestDraw, wantsTangent],
+  );
+
+  useEffect(
+    () => () => {
+      if (cursorFrameRef.current !== 0) cancelAnimationFrame(cursorFrameRef.current);
+    },
+    [],
+  );
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -234,6 +254,15 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
     [dispatch, requestDraw, viewport],
   );
 
+  /**
+   * Zoom with the graph point under (clientX, clientY) left where it is.
+   *
+   * `factor` multiplies the scale, and the scale counts graph units per pixel,
+   * so a factor below one zooms in. That inversion is easy to get backwards and
+   * both gestures had it backwards at one point, so it is spelled out here and
+   * the callers pass a magnification instead: `zoomBy(magnify)` reads the way
+   * the gesture does.
+   */
   const zoomAt = useCallback(
     (factor: number, clientX: number, clientY: number) => {
       const canvas = canvasRef.current;
@@ -288,10 +317,11 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
     [shiftView],
   );
 
+  /** `magnify` above one zooms in. */
   const zoomFromCentre = useCallback(
-    (factor: number) => {
+    (magnify: number) => {
       const rect = wrapRef.current?.getBoundingClientRect();
-      zoomAt(factor, (rect?.left ?? 0) + (rect?.width ?? 0) / 2, (rect?.top ?? 0) + (rect?.height ?? 0) / 2);
+      zoomAt(1 / magnify, (rect?.left ?? 0) + (rect?.width ?? 0) / 2, (rect?.top ?? 0) + (rect?.height ?? 0) / 2);
     },
     [zoomAt],
   );
@@ -353,9 +383,10 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         const previous = pinchRef.current;
         pinchRef.current = next;
 
-        const ratio = next.lastDistance / previous.lastDistance;
-        if (Math.abs(ratio - 1) > 1e-4) {
-          zoomAt(ratio, next.lastMidX, next.lastMidY);
+        // Fingers moving apart magnify; the scale runs the other way.
+        const magnify = next.lastDistance / previous.lastDistance;
+        if (Math.abs(magnify - 1) > 1e-4) {
+          zoomAt(1 / magnify, next.lastMidX, next.lastMidY);
         }
         dragBy(next.lastMidX - previous.lastMidX, next.lastMidY - previous.lastMidY);
         showCursor(toGraph(event.clientX, event.clientY));
@@ -438,12 +469,25 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         return;
       }
 
-      zoomAt(Math.exp(-clampPixels(event.deltaY * unit) * ZOOM_PER_PIXEL), event.clientX, event.clientY);
+      // Scrolling up zooms in, which is a magnification above one and so a
+      // scale multiplier below one.
+      const pixels = clampPixels(event.deltaY * unit);
+      zoomAt(Math.exp(pixels * ZOOM_PER_PIXEL), event.clientX, event.clientY);
     };
 
     canvas.addEventListener("wheel", onWheel, { passive: false });
     return () => canvas.removeEventListener("wheel", onWheel);
   }, [dragBy, zoomAt]);
+
+  /* ---------------------------------------------------------------- framing */
+
+  // Recomputed when the document or the window changes, not when the pointer
+  // does, so panning does not pay for it.
+  const fit = useMemo(() => {
+    if (size.width < 2 || size.height < 2) return null;
+    const bounds = dataBounds(build.drawables, points, build.scope, viewport, size);
+    return bounds ? viewportFor(bounds, size) : null;
+  }, [build.drawables, build.scope, points, size, viewport]);
 
   /* --------------------------------------------------------------- keyboard */
 
@@ -472,24 +516,40 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
         case "_":
           zoomFromCentre(0.8);
           break;
+        case "f":
+        case "F":
+          if (fit) moveTo(fit);
+          else return;
+          break;
         default:
           return;
       }
       event.preventDefault();
     },
-    [shiftView, zoomFromCentre],
+    [fit, moveTo, shiftView, zoomFromCentre],
   );
 
   /* ---------------------------------------------------------------- readout */
 
   const decimals = decimalsForScale(liveViewport.current.scale);
+
+  // The focused curve's value where the pointer is, falling back to the centre
+  // of the view so the readout still means something during a pan.
   const focusedValue = useMemo(() => {
     if (!focusedId) return null;
     const drawable = build.drawables.find((entry) => entry.id === focusedId);
     if (!drawable || drawable.kind !== "curve") return null;
-    const value = evaluate(drawable.fn, liveViewport.current.x, build.scope);
+    const at = cursor ? cursor.x : liveViewport.current.x;
+    const value = evaluate(drawable.fn, at, build.scope);
     return Number.isFinite(value) ? value : null;
-  }, [build.drawables, build.scope, focusedId, viewport.x]);
+  }, [build.drawables, build.scope, cursor, focusedId, viewport.x]);
+
+  const focusedSlope = useMemo(() => {
+    if (!focusedId || !cursor) return null;
+    const drawable = build.drawables.find((entry) => entry.id === focusedId);
+    if (!drawable || drawable.kind !== "curve") return null;
+    return slope(drawable.fn, build.scope, cursor.x, liveViewport.current.scale);
+  }, [build.drawables, build.scope, cursor, focusedId, viewport.scale]);
 
   const readout = cursor && (settings.showDragHint || panning || focusedValue !== null) ? (
     <div className="readout">
@@ -499,6 +559,11 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
       {focusedValue !== null ? (
         <span>
           y <b>{formatNumber(focusedValue, decimals)}</b>
+        </span>
+      ) : null}
+      {focusedSlope !== null ? (
+        <span>
+          dy/dx <b>{formatNumber(focusedSlope, Math.min(6, decimals + 2))}</b>
         </span>
       ) : null}
     </div>
@@ -546,6 +611,19 @@ export function GraphView({ build, viewport, settings, focusedId, dark }: GraphV
             onClick={() => zoomFromCentre(1 / 1.4)}
           >
             <IconMinus size={16} />
+          </button>
+          <button
+            type="button"
+            className="icon-button"
+            title="Zoom to fit (F)"
+            aria-label="Zoom to fit"
+            disabled={fit === null}
+            onClick={() => {
+              if (!fit) return;
+              moveTo(fit);
+            }}
+          >
+            <IconFit size={16} />
           </button>
           <button
             type="button"

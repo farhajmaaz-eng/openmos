@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { GridStyle, Settings, ThemeName } from "../document/types";
+import type { GridStyle, Settings, ThemeName, Viewport } from "../document/types";
+import type { BuildResult } from "../document/build";
+import { downloadBlob, renderToBlob } from "../graph/export";
 import { FUNCTIONS } from "../math/functions";
 import { useDispatch } from "../state/useStore";
 import { emptyDocument } from "../state/store";
 import { sanitize, shareUrl } from "../state/persist";
 import { Latex } from "./ColorMenu";
-import { IconClose, IconCopy, IconCheck, IconDownload, IconUpload } from "./Icon";
+import { IconClose, IconCopy, IconCheck, IconDownload, IconImage, IconUpload } from "./Icon";
 import { store } from "../state/useStore";
 
 /* ------------------------------------------------------------------ dialog */
@@ -231,12 +233,14 @@ const SHORTCUTS: { keys: string[]; description: string }[] = [
   { keys: ["Backspace"], description: "Delete an empty row" },
   { keys: ["Alt", "↑"], description: "Move the focused row up" },
   { keys: ["Alt", "↓"], description: "Move the focused row down" },
-  { keys: ["Drag"], description: "Pan the graph" },
+  { keys: ["Drag"], description: "Pan the graph — right takes the graph left" },
   { keys: ["Scroll"], description: "Zoom toward the pointer" },
   { keys: ["Shift", "Scroll"], description: "Pan sideways" },
+  { keys: ["Two fingers"], description: "Pinch to zoom and slide together" },
   { keys: ["Drag point"], description: "Move a point on the graph" },
-  { keys: ["←", "→", "↑", "↓"], description: "Pan the graph (graph focused)" },
+  { keys: ["←", "→", "↑", "↓"], description: "Pan the view (graph focused)" },
   { keys: ["+", "−"], description: "Zoom in and out (graph focused)" },
+  { keys: ["F"], description: "Zoom to fit the curves (graph focused)" },
   { keys: ["Ctrl", "Z"], description: "Undo" },
   { keys: ["Ctrl", "Shift", "Z"], description: "Redo" },
   { keys: ["Ctrl", "D"], description: "Duplicate the focused row" },
@@ -264,9 +268,23 @@ export function ShortcutsPanel({ onClose }: { onClose: () => void }) {
 
 /* ------------------------------------------------------------------ share */
 
-export function SharePanel({ onClose }: { onClose: () => void }) {
+export function SharePanel({
+  build,
+  viewport,
+  focusedId,
+  dark,
+  onClose,
+}: {
+  build: BuildResult;
+  viewport: Viewport;
+  focusedId: string | null;
+  dark: boolean;
+  onClose: () => void;
+}) {
   const [url, setUrl] = useState(() => shareUrl(store.getState().doc));
   const [copied, setCopied] = useState(false);
+  const [imageSize, setImageSize] = useState(2);
+  const [imageNote, setImageNote] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const copy = async () => {
@@ -287,6 +305,23 @@ export function SharePanel({ onClose }: { onClose: () => void }) {
     link.download = "openmos.json";
     link.click();
     URL.revokeObjectURL(link.href);
+  };
+
+  const downloadImage = async () => {
+    setImageNote("Rendering…");
+    try {
+      const width = 1400;
+      const height = Math.round((width * 9) / 16);
+      const blob = await renderToBlob(build, viewport, store.getState().doc.settings, focusedId, dark, { width, height }, imageSize);
+      if (!blob) {
+        setImageNote("The browser would not produce an image.");
+        return;
+      }
+      downloadBlob(blob, "openmos.png");
+      setImageNote(`Saved ${width * imageSize}×${height * imageSize} image.`);
+    } catch {
+      setImageNote("The image could not be rendered.");
+    }
   };
 
   const upload = async (file: File) => {
@@ -334,6 +369,33 @@ export function SharePanel({ onClose }: { onClose: () => void }) {
           event.target.value = "";
         }}
       />
+
+      <div className="share-section">
+        <h3 className="share-heading">Image</h3>
+        <p className="share-note">
+          Saves the current view as a PNG on a transparent-free white or dark background, independent of
+          how large your window happens to be.
+        </p>
+        <div className="share-row">
+          <Segmented
+            value={String(imageSize)}
+            options={[
+              { value: "1", label: "1×" },
+              { value: "2", label: "2×" },
+              { value: "3", label: "3×" },
+            ]}
+            onChange={(value) => setImageSize(Number(value))}
+            label="Image size"
+          />
+          <button type="button" className="text-button" onClick={() => void downloadImage()}>
+            <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+              <IconImage size={15} />
+              Save PNG
+            </span>
+          </button>
+        </div>
+        {imageNote ? <p className="share-note is-quiet">{imageNote}</p> : null}
+      </div>
 
       <p className="share-note">
         This link carries the whole document — every expression, slider, point and the current view — so

@@ -7,7 +7,9 @@ import { addExpression } from "./state/actions";
 import { ExpressionList, AddButton } from "./ui/ExpressionList";
 import { GraphView } from "./ui/GraphView";
 import { FunctionPanel, SettingsPanel, SharePanel, ShortcutsPanel } from "./ui/Panels";
+import { IntersectionsPanel } from "./ui/Analyze";
 import {
+  IconCrossings,
   IconFunction,
   IconKeyboard,
   IconList,
@@ -44,6 +46,19 @@ export default function App() {
 
   const build = useMemo(() => buildDocument(doc), [doc]);
   const lastId = doc.items[doc.items.length - 1]?.id;
+
+  /* The graph reports its own size so panels that search the window can use it
+     without a second ResizeObserver. */
+  const [graphSize, setGraphSize] = useState({ width: 800, height: 600 });
+  const measureGraph = useCallback((element: HTMLElement | null) => {
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    setGraphSize((current) =>
+      Math.round(current.width) === Math.round(rect.width) && Math.round(current.height) === Math.round(rect.height)
+        ? current
+        : { width: rect.width, height: rect.height },
+    );
+  }, []);
 
   /* ------------------------------------------------------------- toasts */
 
@@ -190,6 +205,15 @@ export default function App() {
             <button
               type="button"
               className="icon-button"
+              title="Intersections"
+              aria-label="Intersections"
+              onClick={() => dispatch({ type: "setPanel", panel: panel === "intersections" ? "none" : "intersections" })}
+            >
+              <IconCrossings size={17} />
+            </button>
+            <button
+              type="button"
+              className="icon-button"
               title="Share"
               aria-label="Share"
               onClick={() => dispatch({ type: "setPanel", panel: panel === "share" ? "none" : "share" })}
@@ -230,6 +254,7 @@ export default function App() {
                 items={doc.items}
                 selectedIds={selectedIds}
                 focusedId={focusedId}
+                viewport={doc.viewport}
               />
             )}
           </div>
@@ -240,7 +265,7 @@ export default function App() {
         </div>
       </aside>
 
-      <div className="graph-area">
+      <div className="graph-area" ref={measureGraph}>
         <GraphView
           build={build}
           viewport={doc.viewport}
@@ -262,7 +287,29 @@ export default function App() {
       {panel === "shortcuts" ? (
         <ShortcutsPanel onClose={() => dispatch({ type: "setPanel", panel: "none" })} />
       ) : null}
-      {panel === "share" ? <SharePanel onClose={() => dispatch({ type: "setPanel", panel: "none" })} /> : null}
+      {panel === "share" ? (
+        <SharePanel
+          build={build}
+          viewport={doc.viewport}
+          focusedId={focusedId}
+          dark={prefersDark}
+          onClose={() => dispatch({ type: "setPanel", panel: "none" })}
+        />
+      ) : null}
+      {panel === "intersections" ? (
+        <IntersectionsPanel
+          build={build}
+          viewport={doc.viewport}
+          size={graphSize}
+          onClose={() => dispatch({ type: "setPanel", panel: "none" })}
+          onGoTo={(crossing) => {
+            dispatch({
+              type: "setViewport",
+              viewport: { x: crossing.x, y: crossing.y, scale: doc.viewport.scale },
+            });
+          }}
+        />
+      ) : null}
       {panel === "functions" ? (
         <FunctionPanel onClose={() => dispatch({ type: "setPanel", panel: "none" })} onInsert={insertFunction} />
       ) : null}

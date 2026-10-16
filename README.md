@@ -30,26 +30,50 @@ Implicit multiplication works where you would expect it: `2x`, `xy`, `3sin(x)`,
 
 **Sliders, points and tables**
 
-Sliders bind a name to a value and every expression that uses it redraws. Points
-can be dragged on the graph or typed in. Tables hold one column per list, and
-offer linear, quadratic, cubic, exponential, power and logarithmic fits with the
-R² of each; clicking one adds it to the graph.
+Sliders bind a name to a value and every expression that uses it redraws. A
+play button on a slider walks it through its range so you can watch a curve move.
+Points can be dragged on the graph or typed in. Tables hold one column per list,
+and offer linear, quadratic, cubic, exponential, power and logarithmic fits with
+the R² of each; clicking one adds it to the graph.
+
+**Per-row controls**
+
+The swatch on a row opens colour, line style (solid, dashed, dotted) and fill.
+A function of x also gets two more, shown under the input:
+
+- **∫** shades the area between the curve and the x-axis over a range you can
+  type, and reports the integral. It starts over whatever is on screen.
+- **⌒** draws the tangent line where the pointer is.
 
 **Reading the graph**
 
-Scroll to zoom toward the pointer. Drag to pan — right takes the graph left,
-which reads as pushing the window along rather than pulling the paper. Shift-scroll
+Scroll to zoom toward the pointer. Drag to pan — right takes the graph left, which
+reads as pushing the window along rather than pulling the paper. Shift-scroll
 pans sideways with the picture, and two fingers pinch to zoom and slide at once;
 the zoom half is not reversed, so spreading zooms in and pinching zooms out.
 Arrow keys and the on-screen buttons name a direction for the *view*, so they are
-not reversed. Dragging a point picks it up. The coordinate readout shows x under
-the pointer and the value of the focused expression there.
+not reversed. Dragging a point picks it up. The readout shows x under the pointer
+along with the value and slope of the focused expression there.
+
+**Framing and finding things**
+
+The fit button (or `F` with the graph focused) frames everything on the board. It
+searches outward from the current window until it finds something, so it works
+even after you have zoomed into empty space, and it stops as soon as it has data
+— `x^2` has no extent to find, and chasing one would run the view to infinity.
+
+The crossings panel lists every pair of curves on the board and where they meet.
+Clicking a crossing centres the view on it. Only `y = f(x)` curves take part;
+finding where a parametric or implicit curve crosses another needs a different
+search, so those are left out rather than reported as having none.
 
 **Keeping work**
 
 The document is saved to `localStorage` as you type. Undo and redo cover every
 edit, with a burst of typing collapsed into a single step. Share puts the whole
-document in the link; the share panel can also export and import JSON.
+document in the link; the share panel can also export and import JSON, and save
+the current view as a PNG at 1× to 3× — rendered from the document into a fresh
+canvas, so it does not depend on how large your window happens to be.
 
 ## Notes on a few decisions
 

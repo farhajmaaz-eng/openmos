@@ -18,6 +18,7 @@ import {
   type ContourSegment,
 } from "./contour";
 import { gridStep, niceStep, tickValues } from "./ticks";
+import { slope } from "../document/analysis";
 
 /** Colours the renderer needs, resolved from the document theme. */
 export interface Palette {
@@ -83,6 +84,8 @@ export interface RenderInput {
   devicePixelRatio: number;
   /** Rows whose label should be drawn highlighted. */
   focusedId: string | null;
+  /** Graph-space x under the pointer, for tangent lines. */
+  hoverX: number | null;
 }
 
 export interface FrameResult {
@@ -383,6 +386,12 @@ export class GraphRenderer {
     const context = this.context;
 
     const bounds = transform.bounds();
+
+    // The shaded area goes down first so the curve is drawn over its top edge.
+    if (drawable.area) {
+      this.fillUnderCurve(drawable, input, transform, drawable.area[0], drawable.area[1]);
+    }
+
     const [domainMin, domainMax] = drawable.domain ?? [bounds.minX, bounds.maxX];
     // One column of slack so a curve leaving the window still gets its final
     // segment drawn and does not visibly stop at the edge.
@@ -457,6 +466,99 @@ export class GraphRenderer {
     }
 
     if (penDown) context.stroke();
+    context.restore();
+
+    if (drawable.tangent && input.hoverX !== null) {
+      this.drawTangent(drawable, input, transform);
+    }
+  }
+
+  /**
+   * Shade the column between the curve and the x-axis.
+   *
+   * Working column by column rather than as a polygon keeps a steep section
+   * from needing thousands of vertices, and it needs no contour tracer: for a
+   * given x the curve is a single y, so the span is known.
+   */
+  private fillUnderCurve(
+    drawable: CurveDrawable,
+    input: RenderInput,
+    transform: Transform,
+    from: number,
+    to: number,
+  ): void {
+    const low = Math.min(from, to);
+    const high = Math.max(from, to);
+    if (!Number.isFinite(low) || !Number.isFinite(high) || high <= low) return;
+
+    const domain = drawable.domain;
+    if (domain && (high < domain[0] || low > domain[1])) return;
+
+    const axisY = transform.toY(0);
+    const startColumn = Math.max(0, Math.floor(transform.toX(low)));
+    const endColumn = Math.min(this.width, Math.ceil(transform.toX(high)));
+
+    const context = this.context;
+    context.save();
+    context.beginPath();
+
+    for (let column = startColumn; column < endColumn; column += 1) {
+      const x = transform.toGraphX(column + 0.5);
+      if (x < low || x > high) continue;
+      if (domain && (x < domain[0] || x > domain[1])) continue;
+
+      let y: number;
+      try {
+        y = drawable.fn(x, input.scope);
+      } catch {
+        continue;
+      }
+      if (!Number.isFinite(y)) continue;
+
+      const curveY = transform.toY(y);
+      const top = Math.min(axisY, curveY);
+      const bottom = Math.max(axisY, curveY);
+      if (bottom < 0 || top > this.height) continue;
+      context.rect(column, top, 1, bottom - top);
+    }
+
+    context.fillStyle = withAlpha(drawable.color, 0.2);
+    context.fill();
+    context.restore();
+  }
+
+  /** A short tangent at the hovered x, long enough to read as a direction. */
+  private drawTangent(drawable: CurveDrawable, input: RenderInput, transform: Transform): void {
+    const x = input.hoverX!;
+    const bounds = transform.bounds();
+    if (x < bounds.minX || x > bounds.maxX) return;
+
+    let y: number;
+    let m: number | null;
+    try {
+      y = drawable.fn(x, input.scope);
+      m = slope(drawable.fn, input.scope, x, input.viewport.scale);
+    } catch {
+      return;
+    }
+    if (!Number.isFinite(y) || m === null || !Number.isFinite(m)) return;
+
+    // Span about a tenth of the window, so the line reaches the edge of the
+    // view for a gentle slope and stays a short marker for a steep one.
+    const reach = Math.abs(bounds.maxX - bounds.minX) * 0.1;
+    const x0 = x - reach;
+    const x1 = x + reach;
+
+    const context = this.context;
+    context.save();
+    context.strokeStyle = drawable.color;
+    context.globalAlpha = 0.85;
+    context.lineWidth = 1.5;
+    context.setLineDash([6, 4]);
+    context.beginPath();
+    context.moveTo(transform.toX(x0), transform.toY(y + m * (x0 - x)));
+    context.lineTo(transform.toX(x1), transform.toY(y + m * (x1 - x)));
+    context.stroke();
     context.restore();
   }
 
@@ -885,6 +987,12 @@ const FILL_SCALE = 3;
 const FILL_BLOCK = 8;
 /** Finest cell edge for contours, in CSS pixels. */
 const CONTOUR_PIXEL_SIZE = 2.5;
+
+/** `rgba()` for a hex colour, which is what a canvas fill needs for translucency. */
+export function withAlpha(color: string, alpha: number): string {
+  const [r, g, b] = parseColor(color);
+  return `rgba(${r}, ${g}, ${b}, ${Math.min(1, Math.max(0, alpha))})`;
+}
 
 function parseColor(color: string): [number, number, number] {
   const hex = color.trim().replace("#", "");

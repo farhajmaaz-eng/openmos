@@ -139,6 +139,8 @@ function sanitizeItem(raw: unknown): Item | null {
     domain: pair(input.domain),
     parameterDomain: pair(input.parameterDomain),
     labelHidden: input.labelHidden === true ? true : undefined,
+    area: pair(input.area),
+    tangent: input.tangent === true ? true : undefined,
   };
 }
 
